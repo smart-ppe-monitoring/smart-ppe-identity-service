@@ -11,6 +11,8 @@ import securityTxtRoute from "../modules/security-txt/security-txt.route";
 import { jwksRoute } from "../modules/jwks/jwks.route";
 import { maintenanceGuard } from "../middlewares/maintenance.middleware";
 
+import auditRoute from "../modules/audit/audit.route";
+
 const router = Router();
 
 // Observability, Diagnostics & Security Disclosure
@@ -31,6 +33,7 @@ router.use("/users", userRoute);
 router.use("/rbac", rbacRoute);
 router.use("/integration", integrationRoute);
 router.use("/cron", cronRoute);
+router.use("/audit-logs", auditRoute);
 
 export default router;
 
