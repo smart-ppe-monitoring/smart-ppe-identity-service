@@ -8,7 +8,7 @@ try {
   // Graceful fallback if not supported in runtime
 }
 
-import app from "./app";
+import app from "./identity.app";
 import { envConfig } from "./config/env.config";
 import { webhookQueue } from "./common/queues/webhook.queue";
 import { cronQueue } from "./common/queues/cron.queue";

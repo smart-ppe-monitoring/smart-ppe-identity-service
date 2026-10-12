@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import http from "node:http";
 import crypto from "crypto";
 import jwt from "jsonwebtoken";
-import app from "../src/app";
+import app from "../src/identity.app";
 import {
   JWT_ALGORITHM,
   JWKS_CONSTANTS,

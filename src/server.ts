@@ -8,7 +8,7 @@ try {
   // Graceful fallback if not supported in runtime
 }
 
-import app from "./app";
+import app from "./identity.app";
 import { envConfig } from "./config/env.config";
 import { emailWorker } from "./common/workers/email-worker";
 import { webhookWorker } from "./common/workers/webhook.worker";

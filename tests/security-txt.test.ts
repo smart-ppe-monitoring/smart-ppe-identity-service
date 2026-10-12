@@ -1,7 +1,7 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
-import app from "../src/app";
+import app from "../src/identity.app";
 import {
   SECURITY_TXT_PATHS,
   SECURITY_TXT_DEFAULTS,
