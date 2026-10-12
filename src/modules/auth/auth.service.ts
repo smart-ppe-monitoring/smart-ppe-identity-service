@@ -38,8 +38,8 @@ import {
 } from "./auth.dto";
 import { MailService, mailService } from "../../common/services/mail.service";
 import { R2Service } from "../../common/services/r2.service";
-import { ROLES } from "../../common/constants/role.constant";
 import { PERMISSIONS } from "../../common/constants/permission.constant";
+import { permissionCacheService } from "../../common/services/permission-cache.service";
 import {
   AUDIT_ACTION,
   AUDIT_TARGET_TYPE,
@@ -268,11 +268,26 @@ export class AuthService {
     },
     metadata?: { userAgent?: string; ipAddress?: string },
   ): Promise<LoginResponseDto> {
+    let userPermissions: string[] = [];
+    try {
+      if (user.role.name === "ADMIN") {
+        userPermissions = Object.values(PERMISSIONS);
+      } else if (user.roleId) {
+        const permsSet = await permissionCacheService.getRolePermissions(user.roleId);
+        userPermissions = Array.from(permsSet);
+      }
+    } catch {
+      if (user.role.name === "ADMIN") {
+        userPermissions = Object.values(PERMISSIONS);
+      }
+    }
+
     const payload = {
       id: user.id,
       email: user.email,
       role: user.role.name,
       roleId: user.roleId,
+      permissions: userPermissions,
       purpose: JWT_PURPOSE.ACCESS,
     };
 
@@ -350,10 +365,6 @@ export class AuthService {
       }
     }
 
-    const permissions = Array.from(
-      await permissionCacheService.getRolePermissions(user.roleId),
-    );
-
     return {
       accessToken,
       refreshToken,
@@ -363,7 +374,7 @@ export class AuthService {
         fullName: user.fullName,
         role: user.role.name,
         roleId: user.roleId,
-        permissions,
+        permissions: userPermissions,
         mustChangePassword: user.mustChangePassword ?? false,
       },
     };

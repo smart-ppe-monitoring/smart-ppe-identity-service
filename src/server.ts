@@ -41,7 +41,9 @@ const server = app.listen(PORT, async () => {
   });
 
   // Start background workers, outbox relay and register cron schedules
-  emailWorker.start();
+  if (process.env.NOTIFICATION_SERVICE_STANDALONE !== "true") {
+    emailWorker.start();
+  }
   webhookWorker.start();
   cronWorker.start();
   eventBusWorker.start();
