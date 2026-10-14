@@ -53,7 +53,7 @@ describe("Dynamic RBAC Permission Middleware", () => {
     const req = {
       user: {
         id: "user-1",
-        email: "admin@template.local",
+        email: "admin@ppe.local",
         role: ROLES.ADMIN,
         roleId: mockRoleId,
       },
@@ -95,7 +95,7 @@ describe("Dynamic RBAC Permission Middleware", () => {
     const req = {
       user: {
         id: "user-2",
-        email: "user@template.local",
+        email: "user@ppe.local",
         role: ROLES.USER,
         roleId: mockRoleId,
       },
@@ -137,7 +137,7 @@ describe("Dynamic RBAC Permission Middleware", () => {
     const req = {
       user: {
         id: "user-3",
-        email: "manager@template.local",
+        email: "manager@ppe.local",
         role: ROLES.MANAGER,
         roleId: mockRoleId,
       },

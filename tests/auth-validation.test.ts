@@ -15,7 +15,7 @@ describe("Auth & User Validation Schemas", () => {
         fullName: "Nguyen Van A",
       },
       {
-        email: "user@template.local",
+        email: "user@ppe.local",
         password: "Password@123",
         fullName: "Admin",
       },
@@ -82,7 +82,7 @@ describe("Auth & User Validation Schemas", () => {
 
   it("should validate createUserSchema with any valid email and UUID roleId", () => {
     const validData = {
-      email: "manager@template.local",
+      email: "manager@ppe.local",
       password: "Manager@123456",
       roleId: "123e4567-e89b-12d3-a456-426614174000",
     };

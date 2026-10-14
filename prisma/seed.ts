@@ -547,6 +547,12 @@ async function main() {
       fullName: "Trần Thị An Toàn (Safety Officer)",
       role: "SAFETY_OFFICER",
     },
+    {
+      email: "user@ppe.local",
+      password: userPassword,
+      fullName: "Nguyễn Văn Công Nhân (Site Worker)",
+      role: "USER",
+    },
   ];
 
   for (const u of ppeUsers) {
@@ -568,58 +574,6 @@ async function main() {
     });
     console.log(`User ${u.email} upserted with role ${u.role}`);
   }
-
-  // 4.2 Legacy Template Accounts (Backward Compatibility)
-  await prisma.user.upsert({
-    where: { email: "admin@template.local" },
-    update: {
-      password: adminPassword,
-      fullName: "Admin",
-      roleId: roleMap["ADMIN"],
-      isActive: true,
-    },
-    create: {
-      email: "admin@template.local",
-      password: adminPassword,
-      fullName: "Admin",
-      roleId: roleMap["ADMIN"],
-      isActive: true,
-    },
-  });
-
-  await prisma.user.upsert({
-    where: { email: "manager@template.local" },
-    update: {
-      password: managerPassword,
-      fullName: "Manager",
-      roleId: roleMap["MANAGER"] || roleMap["SAFETY_MANAGER"],
-      isActive: true,
-    },
-    create: {
-      email: "manager@template.local",
-      password: managerPassword,
-      fullName: "Manager",
-      roleId: roleMap["MANAGER"] || roleMap["SAFETY_MANAGER"],
-      isActive: true,
-    },
-  });
-
-  await prisma.user.upsert({
-    where: { email: "user@template.local" },
-    update: {
-      password: userPassword,
-      fullName: "User",
-      roleId: roleMap["USER"],
-      isActive: true,
-    },
-    create: {
-      email: "user@template.local",
-      password: userPassword,
-      fullName: "User",
-      roleId: roleMap["USER"],
-      isActive: true,
-    },
-  });
 
   // 5. Seed Default Maintenance Configuration
   await prisma.maintenanceConfig.upsert({
