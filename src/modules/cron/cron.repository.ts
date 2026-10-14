@@ -1,6 +1,5 @@
 import { Prisma } from "@prisma/client";
 import { prisma } from "../../database/prisma.client";
-import { EMAIL_STATUS } from "../../common/constants/notification.constant";
 import { ActivitySummaryStatsDto } from "./cron.dto";
 import {
   userRepository,
@@ -70,8 +69,6 @@ export class CronRepository {
     const [
       newUsersCount,
       activeSessionsCount,
-      notificationsSentCount,
-      emailsSentCount,
       webhookDeliveriesCount,
       auditLogsCount,
     ] = await prisma.$transaction([
@@ -83,17 +80,6 @@ export class CronRepository {
       prisma.refreshToken.count({
         where: {
           createdAt: { gte: startDate, lte: endDate },
-        },
-      }),
-      prisma.notification.count({
-        where: {
-          createdAt: { gte: startDate, lte: endDate },
-        },
-      }),
-      prisma.emailNotification.count({
-        where: {
-          status: EMAIL_STATUS.SENT,
-          sentAt: { gte: startDate, lte: endDate },
         },
       }),
       prisma.webhookDelivery.count({
@@ -111,8 +97,8 @@ export class CronRepository {
     return {
       newUsersCount,
       activeSessionsCount,
-      notificationsSentCount,
-      emailsSentCount,
+      notificationsSentCount: 0,
+      emailsSentCount: 0,
       webhookDeliveriesCount,
       auditLogsCount,
     };

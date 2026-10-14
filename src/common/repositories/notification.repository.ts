@@ -1,6 +1,4 @@
-import { prisma } from "../../database/prisma.client";
 import {
-  NOTIFICATION_STATUS,
   NOTIFICATION_TYPE,
   NOTIFICATION_PRIORITY,
   EMAIL_STATUS,
@@ -21,23 +19,24 @@ export interface ClaimedEmailRecord {
   updatedAt: Date;
 }
 
-export class NotificationRepository {
-  private readonly db = prisma;
+export interface TemplateRecord {
+  id: string;
+  code: string;
+  name: string;
+  channel: string;
+  subjectTemplate: string | null;
+  contentTemplate: string;
+  status: string;
+}
 
-  async findTemplateByCode(code: string) {
-    const t = await this.db.notificationTemplate.findUnique({
-      where: { code },
-    });
-    if (!t) return null;
-    return {
-      id: t.id,
-      code: t.code,
-      name: t.name,
-      channel: "EMAIL",
-      subjectTemplate: t.subject || t.title || t.name,
-      contentTemplate: t.content,
-      status: t.isActive ? "ACTIVE" : "INACTIVE",
-    };
+/**
+ * Adapter trung gian cho Notification domain.
+ * Các bảng notifications, email_notifications, notification_templates đã được chuyển giao
+ * độc quyền sang smart-ppe-notification-service (ppe_notification_db).
+ */
+export class NotificationRepository {
+  async findTemplateByCode(_code: string): Promise<TemplateRecord | null> {
+    return null;
   }
 
   async createSingleNotification(data: {
@@ -68,18 +67,18 @@ export class NotificationRepository {
     actionUrl?: string;
     metadata?: Record<string, unknown>;
   }) {
-    return this.db.notification.create({
-      data: {
-        userId: data.userId,
-        type: data.type || NOTIFICATION_TYPE.INFO,
-        priority: data.priority || NOTIFICATION_PRIORITY.NORMAL,
-        title: data.title,
-        content: data.content,
-        actionUrl: data.actionUrl,
-        metadata: data.metadata as any,
-        isRead: false,
-      },
-    });
+    return {
+      id: "delegated-to-notification-service",
+      userId: data.userId,
+      type: data.type || NOTIFICATION_TYPE.INFO,
+      priority: data.priority || NOTIFICATION_PRIORITY.NORMAL,
+      title: data.title,
+      content: data.content,
+      actionUrl: data.actionUrl,
+      metadata: data.metadata,
+      isRead: false,
+      createdAt: new Date(),
+    };
   }
 
   async createEmailNotification(data: {
@@ -89,79 +88,38 @@ export class NotificationRepository {
     templateKey: string;
     templateData: unknown;
   }) {
-    return this.db.emailNotification.create({
-      data: {
-        userId: data.userId ?? null,
-        toEmail: data.toEmail,
-        subject: data.subject,
-        templateKey: data.templateKey,
-        templateData: data.templateData as any,
-        status: EMAIL_STATUS.PENDING,
-        attempts: 0,
-      },
-    });
+    return {
+      id: "delegated-to-notification-service",
+      userId: data.userId ?? null,
+      toEmail: data.toEmail,
+      subject: data.subject,
+      templateKey: data.templateKey,
+      templateData: data.templateData,
+      status: EMAIL_STATUS.PENDING,
+      attempts: 0,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
   }
 
-  async claimPendingEmails(batchSize = 20): Promise<ClaimedEmailRecord[]> {
-    return this.db.$queryRaw<ClaimedEmailRecord[]>`
-      UPDATE email_notifications
-      SET status = ${EMAIL_STATUS.PROCESSING}, updated_at = NOW()
-      WHERE id IN (
-        SELECT id FROM email_notifications
-        WHERE (
-          status = ${EMAIL_STATUS.PENDING}
-          OR (status = ${EMAIL_STATUS.PROCESSING} AND updated_at < NOW() - INTERVAL '15 minutes')
-        )
-        AND attempts < 5
-        ORDER BY created_at ASC
-        LIMIT ${batchSize}
-        FOR UPDATE SKIP LOCKED
-      )
-      RETURNING
-        id,
-        user_id AS "userId",
-        to_email AS "toEmail",
-        subject,
-        template_key AS "templateKey",
-        template_data AS "templateData",
-        status,
-        attempts,
-        last_error AS "lastError",
-        sent_at AS "sentAt",
-        created_at AS "createdAt",
-        updated_at AS "updatedAt"
-    `;
+  async claimPendingEmails(_batchSize = 20): Promise<ClaimedEmailRecord[]> {
+    return [];
   }
 
   async updateEmailStatus(
-    id: string,
-    data: {
+    _id: string,
+    _data: {
       status: string;
       attempts?: number;
       lastError?: string | null;
       sentAt?: Date | null;
     },
   ) {
-    return this.db.emailNotification.update({
-      where: { id },
-      data: {
-        status: data.status,
-        ...(data.attempts !== undefined && { attempts: data.attempts }),
-        ...(data.lastError !== undefined && { lastError: data.lastError }),
-        ...(data.sentAt !== undefined && { sentAt: data.sentAt }),
-      },
-    });
+    return null;
   }
 
-  async resetEmailForRetry(id: string) {
-    return this.db.emailNotification.update({
-      where: { id },
-      data: {
-        status: EMAIL_STATUS.PENDING,
-        attempts: 0,
-        lastError: null,
-      },
-    });
+  async resetEmailForRetry(_id: string) {
+    return null;
   }
 }
 
