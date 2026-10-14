@@ -72,14 +72,16 @@ app.use(cookieParser());
 
 import { docsRouter } from "./modules/docs/docs.router";
 
-app.use("/api/docs", docsRouter);
-app.get("/openapi.json", (_req, res) => res.status(200).json(swaggerSpec));
+if (envConfig.nodeEnv !== "production") {
+  app.use("/api/docs", docsRouter);
+  app.get("/openapi.json", (_req, res) => res.status(200).json(swaggerSpec));
 
-app.use(
-  "/api/docs",
-  swaggerUi.serve,
-  swaggerUi.setup(undefined, swaggerOptions),
-);
+  app.use(
+    "/api/docs",
+    swaggerUi.serve,
+    swaggerUi.setup(undefined, swaggerOptions),
+  );
+}
 
 app.use(securityTxtRoute);
 app.use(rateLimitMiddleware, jwksRoute);
