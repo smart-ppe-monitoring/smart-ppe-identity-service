@@ -1,38 +1,33 @@
+# ── Stage 1: deps ──
+FROM node:22-alpine AS deps
+RUN apk add --no-cache libc6-compat openssl git
+WORKDIR /app
+RUN corepack enable && corepack prepare pnpm@9.15.0 --activate
+COPY package.json ./
+COPY prisma ./prisma/
+RUN pnpm install
+
+# ── Stage 2: builder ──
 FROM node:22-alpine AS builder
-
 RUN apk add --no-cache libc6-compat openssl git
 WORKDIR /app
+RUN corepack enable && corepack prepare pnpm@9.15.0 --activate
+COPY --from=deps /app/node_modules ./node_modules
+COPY . .
+RUN pnpm exec prisma generate
+RUN pnpm build
 
-RUN corepack enable && corepack prepare pnpm@latest --activate
-
-COPY package.json pnpm-lock.yaml* ./
-COPY prisma ./prisma/
-
-RUN pnpm install --frozen-lockfile || pnpm install
-
-COPY tsconfig.json ./
-COPY src ./src/
-
-RUN pnpm run prisma:generate
-RUN pnpm run build
-
+# ── Stage 3: runner ──
 FROM node:22-alpine AS runner
-
-RUN apk add --no-cache libc6-compat openssl git
+RUN apk add --no-cache libc6-compat openssl tini
 WORKDIR /app
-
-ENV NODE_ENV=production
-RUN corepack enable && corepack prepare pnpm@latest --activate
-
-COPY package.json pnpm-lock.yaml* ./
-COPY prisma ./prisma/
-
-RUN pnpm install --prod --frozen-lockfile || pnpm install --prod
-
+USER node
+COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/dist ./dist
-COPY --from=builder /app/node_modules/@prisma ./node_modules/@prisma
-COPY keys ./keys/
+COPY --from=builder /app/prisma ./prisma
+COPY --chown=node:node keys ./keys/
+COPY package.json ./
 
 EXPOSE 9999
-
+ENTRYPOINT ["/sbin/tini", "--"]
 CMD ["node", "dist/server.js"]
