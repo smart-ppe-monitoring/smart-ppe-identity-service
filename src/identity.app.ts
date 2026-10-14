@@ -70,10 +70,15 @@ app.use(express.json({ limit: "2mb" }));
 app.use(express.urlencoded({ extended: true, limit: "2mb" }));
 app.use(cookieParser());
 
+import { docsRouter } from "./modules/docs/docs.router";
+
+app.use("/api/docs", docsRouter);
+app.get("/openapi.json", (_req, res) => res.status(200).json(swaggerSpec));
+
 app.use(
   "/api/docs",
   swaggerUi.serve,
-  swaggerUi.setup(swaggerSpec, swaggerOptions),
+  swaggerUi.setup(undefined, swaggerOptions),
 );
 
 app.use(securityTxtRoute);
