@@ -33,6 +33,7 @@ import {
 } from "../../../common/helpers/totp.helper";
 import { generateDeviceHash } from "../../../common/helpers/user-agent.helper";
 import { permissionCacheService } from "../../../common/services/permission-cache.service";
+import { PERMISSIONS } from "../../../common/constants/permission.constant";
 
 export class Auth2FAService {
   constructor(private readonly getRepo: () => AuthRepository) {}
@@ -276,12 +277,27 @@ export class Auth2FAService {
       );
     }
 
+    let userPermissions: string[] = [];
+    try {
+      if (user.role.name === "ADMIN") {
+        userPermissions = Object.values(PERMISSIONS);
+      } else if (user.roleId) {
+        const permsSet = await permissionCacheService.getRolePermissions(user.roleId);
+        userPermissions = Array.from(permsSet);
+      }
+    } catch {
+      if (user.role.name === "ADMIN") {
+        userPermissions = Object.values(PERMISSIONS);
+      }
+    }
+
     // Cấp Access Token + Refresh Token chính thức
     const tokenPayload = {
       id: user.id,
       email: user.email,
       role: user.role.name,
       roleId: user.roleId,
+      permissions: userPermissions,
       purpose: JWT_PURPOSE.ACCESS,
     };
 
