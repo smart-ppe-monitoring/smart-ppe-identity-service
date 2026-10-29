@@ -17,6 +17,15 @@ export class CronRepository {
    * Xóa toàn bộ các bản ghi Audit Logs tạo trước thời điểm cutoffDate
    */
   async deleteAuditLogsOlderThan(cutoffDate: Date): Promise<number> {
+    // SEC-18: Guard chống xóa các bản ghi trong vòng 30 ngày gần nhất
+    const minSafeCutoff = new Date(
+      Date.now() - 30 * 24 * 60 * 60 * 1000 + 60000,
+    );
+    if (!cutoffDate || cutoffDate > minSafeCutoff) {
+      throw new Error(
+        "cutoffDate không được nằm trong phạm vi 30 ngày gần nhất để tránh xóa nhầm dữ liệu kiểm toán",
+      );
+    }
     const result = await prisma.auditLog.deleteMany({
       where: {
         createdAt: { lt: cutoffDate },

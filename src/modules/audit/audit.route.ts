@@ -10,10 +10,7 @@ import {
 } from "./audit.validation";
 import { validate } from "../../middlewares/validate.middleware";
 import { authMiddleware } from "../../middlewares/auth.middleware";
-import {
-  requirePermission,
-  requireAnyPermission,
-} from "../../middlewares/permission.middleware";
+import { requirePermission } from "../../middlewares/permission.middleware";
 import { PERMISSIONS } from "../../common/constants/permission.constant";
 
 const router = Router();
@@ -45,14 +42,11 @@ router.get(
   auditController.getSummary,
 );
 
-// 4. Xuất báo cáo kiểm toán (CSV / JSON)
+// 4. Xuất báo cáo kiểm toán (CSV / JSON) (SEC-17: Bắt buộc có quyền AUDIT_LOG_EXPORT riêng biệt)
 router.get(
   "/export",
   authMiddleware,
-  requireAnyPermission(
-    PERMISSIONS.AUDIT_LOG_EXPORT,
-    PERMISSIONS.AUDIT_LOG_READ,
-  ),
+  requirePermission(PERMISSIONS.AUDIT_LOG_EXPORT),
   validate(exportAuditLogSchema, "query"),
   auditController.exportLogs,
 );

@@ -282,12 +282,14 @@ export class AuthService {
       }
     }
 
+    // SEC-16: Đưa cờ mustChangePassword vào JWT Access Token để áp đặt đổi mật khẩu
     const payload = {
       id: user.id,
       email: user.email,
       role: user.role.name,
       roleId: user.roleId,
       permissions: userPermissions,
+      mustChangePassword: user.mustChangePassword ?? false,
       purpose: JWT_PURPOSE.ACCESS,
     };
 
@@ -816,13 +818,14 @@ export class AuthService {
       }
     }
 
-    // SEC-15: Bổ sung claim permissions vào Access Token khi refresh để satellite services xác thực offline hợp lệ
+    // SEC-15 & SEC-16: Bổ sung permissions và mustChangePassword vào Access Token khi refresh
     const newPayload = {
       id: user.id,
       email: user.email,
       role: user.role.name,
       roleId: user.roleId,
       permissions: userPermissions,
+      mustChangePassword: user.mustChangePassword ?? false,
       purpose: JWT_PURPOSE.ACCESS,
     };
 
@@ -1087,6 +1090,7 @@ export class AuthService {
 
     const passwordHash = await bcrypt.hash(data.newPassword, 10);
     await this.repository.updatePasswordAndRevokeTokens(userId, passwordHash);
+    permissionCacheService.invalidateUser(userId);
 
     notificationDispatcher
       .notify(

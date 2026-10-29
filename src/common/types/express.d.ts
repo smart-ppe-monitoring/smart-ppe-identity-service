@@ -8,6 +8,7 @@ declare global {
         role: string;
         roleId?: string;
         permissions?: string[];
+        mustChangePassword?: boolean;
       };
       apiKey?: {
         id: string;

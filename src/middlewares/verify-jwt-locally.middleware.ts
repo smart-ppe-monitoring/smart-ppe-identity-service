@@ -59,6 +59,8 @@ interface AccessTokenClaims {
   email: string;
   role: string;
   roleId?: string;
+  permissions?: string[];
+  mustChangePassword?: boolean;
   purpose?: string;
   type?: string;
 }
@@ -336,6 +338,15 @@ export function createVerifyJwtLocally(options: VerifyJwtLocallyOptions = {}) {
           "Token không hợp lệ để truy cập tài nguyên được bảo vệ",
           401,
           ERROR_CODE.UNAUTHORIZED,
+        );
+      }
+
+      // 5.1 SEC-16: Chặn token có cờ mustChangePassword truy cập satellite services
+      if (payload.mustChangePassword) {
+        throw new AppError(
+          "Bạn bắt buộc phải đổi mật khẩu trước khi thực hiện các thao tác khác trên hệ thống",
+          403,
+          ERROR_CODE.FORBIDDEN,
         );
       }
 

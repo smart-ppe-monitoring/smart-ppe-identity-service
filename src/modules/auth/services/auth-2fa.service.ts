@@ -360,13 +360,14 @@ export class Auth2FAService {
       }
     }
 
-    // Cấp Access Token + Refresh Token chính thức
+    // Cấp Access Token + Refresh Token chính thức (SEC-16: Đưa cờ mustChangePassword vào payload)
     const tokenPayload = {
       id: user.id,
       email: user.email,
       role: user.role.name,
       roleId: user.roleId,
       permissions: userPermissions,
+      mustChangePassword: user.mustChangePassword ?? false,
       purpose: JWT_PURPOSE.ACCESS,
     };
 

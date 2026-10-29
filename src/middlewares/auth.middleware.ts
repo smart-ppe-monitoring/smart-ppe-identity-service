@@ -73,6 +73,8 @@ export async function authMiddleware(
           email: string;
           role: string;
           roleId?: string;
+          permissions?: string[];
+          mustChangePassword?: boolean;
           purpose?: string;
           type?: string;
         }
@@ -141,11 +143,31 @@ export async function authMiddleware(
       return;
     }
 
+    // SEC-16: Áp đặt cờ mustChangePassword
+    // Nếu token hoặc tài khoản có mustChangePassword: true, chặn mọi thao tác ngoại trừ PUT /auth/password
+    const isMustChangePassword = Boolean(
+      payload.mustChangePassword || userState.mustChangePassword,
+    );
+    const isAllowedPasswordEndpoint =
+      cleanPath.endsWith("/auth/password") && req.method === "PUT";
+
+    if (isMustChangePassword && !isAllowedPasswordEndpoint) {
+      next(
+        new AppError(
+          "Bạn bắt buộc phải đổi mật khẩu trước khi thực hiện các thao tác khác trên hệ thống",
+          403,
+          ERROR_CODE.FORBIDDEN,
+        ),
+      );
+      return;
+    }
+
     req.user = {
       id: payload.id,
       email: payload.email,
       role: userState.roleName || payload.role,
       roleId: userState.roleId || payload.roleId,
+      mustChangePassword: isMustChangePassword,
     };
 
     next();

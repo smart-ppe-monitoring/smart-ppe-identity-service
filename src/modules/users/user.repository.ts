@@ -285,6 +285,7 @@ export class UserRepository {
         isActive: true,
         deletedAt: true,
         roleId: true,
+        mustChangePassword: true,
         role: { select: { name: true } },
       },
     });
