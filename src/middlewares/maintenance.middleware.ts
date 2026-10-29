@@ -97,11 +97,21 @@ export function maintenanceGuard(options?: MaintenanceGuardOptions) {
 
       // If user is authenticated, check bypass permissions / roles
       if (user) {
-        // P2-08: Ensure user is still active before granting maintenance bypass
+        // SEC-11 Fix: Bắt buộc tài khoản người dùng phải tồn tại thực tế trong DB,
+        // đang hoạt động (isActive) và chưa bị xóa mềm/hard-delete (purged).
+        // Chống bypass bảo trì khi token Admin đã bị xóa sạch (purged) khỏi database.
         const userState = await permissionCacheService.getUserState(user.id);
-        if (userState && (!userState.isActive || userState.deletedAt)) {
+        if (!userState || !userState.isActive || userState.deletedAt) {
           user = undefined;
           delete (req as any).user;
+        } else {
+          // Đồng bộ lại vai trò và roleId thực tế từ DB (tránh dùng role cũ trong token)
+          if (userState.roleName) {
+            user.role = userState.roleName as any;
+          }
+          if (userState.roleId) {
+            user.roleId = userState.roleId;
+          }
         }
       }
 
