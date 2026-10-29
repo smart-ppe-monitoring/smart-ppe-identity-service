@@ -444,34 +444,16 @@ export class UserRepository {
   }
 
   /**
-   * Đếm số lượng người dùng đang hoạt động có đặc quyền quản trị hệ thống:
-   * 1. Vai trò khớp với roleName (mặc định ROLES.ADMIN)
-   * 2. Hoặc vai trò sở hữu các quyền quản trị then chốt (USER_ROLE_ASSIGN, ROLE_PERMISSION_ASSIGN)
+   * Đếm số lượng người dùng đang hoạt động có vai trò Quản trị viên hệ thống (mặc định ROLES.ADMIN).
+   * Khắc phục SEC-06: Chỉ đếm tài khoản mang vai trò Admin thực tế, không tính gộp các vai trò
+   * ủy quyền (Operator) để đảm bảo hàng rào Anti-lockout bảo vệ Admin duy nhất không bị vượt qua.
    */
   async countActiveAdmins(roleName: string = ROLES.ADMIN): Promise<number> {
     return prisma.user.count({
       where: {
         deletedAt: null,
         isActive: true,
-        OR: [
-          { role: { name: roleName } },
-          {
-            role: {
-              permissions: {
-                some: {
-                  permission: {
-                    name: {
-                      in: [
-                        PERMISSIONS.USER_ROLE_ASSIGN,
-                        PERMISSIONS.ROLE_PERMISSION_ASSIGN,
-                      ],
-                    },
-                  },
-                },
-              },
-            },
-          },
-        ],
+        role: { name: roleName },
       },
     });
   }

@@ -154,9 +154,9 @@ export class UserService {
 
     // Anti-lockout guard: Ngăn chặn vô hiệu hóa Quản trị viên (Admin) duy nhất
     if (data.isActive === false && existing.isActive) {
-      if (isTargetAdmin) {
+      if (existing.role?.name === ROLES.ADMIN) {
         const activeAdminsCount = await this.repository.countActiveAdmins(
-          existing.role?.name,
+          ROLES.ADMIN,
         );
         if (activeAdminsCount <= 1) {
           throw new AppError(
@@ -231,9 +231,9 @@ export class UserService {
     }
 
     // Anti-lockout guard: Ngăn chặn xóa tài khoản Quản trị viên (Admin) duy nhất
-    if (userToDelete.isActive && isTargetAdmin) {
+    if (userToDelete.isActive && userToDelete.role?.name === ROLES.ADMIN) {
       const activeAdminsCount = await this.repository.countActiveAdmins(
-        userToDelete.role?.name,
+        ROLES.ADMIN,
       );
       if (activeAdminsCount <= 1) {
         throw new AppError(

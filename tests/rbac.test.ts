@@ -10,6 +10,7 @@ import { ROLES } from "../src/common/constants/role.constant";
 import { AppError } from "../src/common/errors/app-error";
 import { ERROR_CODE } from "../src/common/errors/error-code";
 import { RbacService } from "../src/modules/rbac/rbac.service";
+import { userRepository } from "../src/modules/users/user.repository";
 
 describe("Dynamic RBAC Permission Middleware", () => {
   beforeEach(() => {
@@ -192,6 +193,8 @@ describe("Dynamic RBAC Permission Middleware", () => {
     };
 
     let rbacService: RbacService;
+    let roles: Record<string, any> = {};
+    let users: Record<string, any> = {};
 
     beforeEach(() => {
       permissionCacheService.clear();
@@ -215,7 +218,13 @@ describe("Dynamic RBAC Permission Middleware", () => {
         expiresAt: Date.now() + 60000,
       });
 
-      const roles: Record<string, any> = {
+      // Target custom role permissions
+      (permissionCacheService as any).cache.set(targetCustomRoleId, {
+        permissions: new Set([PERMISSIONS.USER_READ]),
+        expiresAt: Date.now() + 60000,
+      });
+
+      roles = {
         [adminRoleId]: {
           id: adminRoleId,
           name: ROLES.ADMIN,
@@ -236,16 +245,18 @@ describe("Dynamic RBAC Permission Middleware", () => {
         },
       };
 
-      const users: Record<string, any> = {
+      users = {
         [adminUserId]: {
           id: adminUserId,
           roleId: adminRoleId,
           role: { id: adminRoleId, name: ROLES.ADMIN },
+          isActive: true,
         },
         [operatorUserId]: {
           id: operatorUserId,
           roleId: operatorRoleId,
           role: { id: operatorRoleId, name: "OPERATOR" },
+          isActive: true,
         },
       };
 
@@ -265,6 +276,13 @@ describe("Dynamic RBAC Permission Middleware", () => {
         },
         createAuditLog: async () => {},
         findUserById: async (id: string) => users[id] || null,
+        assignUserRole: async (userId: string, roleId: string) => {
+          if (users[userId]) {
+            users[userId].roleId = roleId;
+            users[userId].role = roles[roleId];
+          }
+          return users[userId];
+        },
         createRole: async (data: any) => ({
           id: "new-role-uuid",
           ...data,
@@ -388,6 +406,185 @@ describe("Dynamic RBAC Permission Middleware", () => {
           return true;
         },
       );
+    });
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // SEC-05: Privilege Escalation Guard (Circle Admin Check Fix)
+    // ──────────────────────────────────────────────────────────────────────────
+    it("should reject Operator with USER_ROLE_ASSIGN from promoting another user to ADMIN role (SEC-05)", async () => {
+      // Add a third user that operator wants to promote to ADMIN
+      users["victim-user-uuid"] = {
+        id: "victim-user-uuid",
+        roleId: targetCustomRoleId,
+        role: roles[targetCustomRoleId],
+        isActive: true,
+      };
+
+      await assert.rejects(
+        async () => {
+          await rbacService.assignUserRole(
+            "victim-user-uuid",
+            adminRoleId,
+            { actorId: operatorUserId },
+          );
+        },
+        (err: any) => {
+          assert.ok(err instanceof AppError);
+          assert.strictEqual(err.statusCode, 403);
+          assert.strictEqual(err.code, ERROR_CODE.FORBIDDEN);
+          assert.match(
+            err.message,
+            /Chỉ Quản trị viên \(Admin\) mới có quyền cấp vai trò Quản trị viên/,
+          );
+          return true;
+        },
+      );
+    });
+
+    it("should allow true ADMIN to promote another user to ADMIN role", async () => {
+      users["candidate-user-uuid"] = {
+        id: "candidate-user-uuid",
+        roleId: targetCustomRoleId,
+        role: roles[targetCustomRoleId],
+        isActive: true,
+      };
+
+      const result = await rbacService.assignUserRole(
+        "candidate-user-uuid",
+        adminRoleId,
+        { actorId: adminUserId },
+      );
+
+      assert.ok(result);
+      assert.strictEqual(result.roleId, adminRoleId);
+    });
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // SEC-06: Anti-Lockout Sole Admin Demotion Defense
+    // ──────────────────────────────────────────────────────────────────────────
+    it("should reject demoting the sole active ADMIN user with 400 Validation Error (SEC-06)", async () => {
+      // Stub userRepository.countActiveAdmins to return 1 active admin
+      (userRepository as any).countActiveAdmins = async () => 1;
+
+      // Create another admin user attempting to demote adminUserId
+      users["second-admin-uuid"] = {
+        id: "second-admin-uuid",
+        roleId: adminRoleId,
+        role: roles[adminRoleId],
+        isActive: true,
+      };
+
+      await assert.rejects(
+        async () => {
+          await rbacService.assignUserRole(
+            adminUserId,
+            targetCustomRoleId,
+            { actorId: "second-admin-uuid" },
+          );
+        },
+        (err: any) => {
+          assert.ok(err instanceof AppError);
+          assert.strictEqual(err.statusCode, 400);
+          assert.strictEqual(err.code, ERROR_CODE.VALIDATION_ERROR);
+          assert.match(
+            err.message,
+            /Không thể hạ quyền Quản trị viên \(Admin\) duy nhất/,
+          );
+          return true;
+        },
+      );
+    });
+  });
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // SEC-07: API Key Scoped Permissions & Admin Bypass Elimination
+  // ──────────────────────────────────────────────────────────────────────────
+  describe("API Key Authorization Scoping (SEC-07)", () => {
+    it("should strictly enforce scoped permissions for API Key and ignore ADMIN role bypass", async () => {
+      // Giả lập request dùng API Key của một tài khoản ADMIN, nhưng chỉ được cấp quyền đọc PPE_SITE_READ
+      const req = {
+        user: {
+          id: "admin-user-id",
+          email: "admin@ppe.local",
+          role: ROLES.ADMIN,
+          roleId: "admin-role-id",
+          permissions: [PERMISSIONS.PPE_SITE_READ],
+        },
+        apiKey: {
+          id: "key-123",
+          name: "Monitoring Service Key",
+          prefix: "ppe_live_abc",
+          permissions: [PERMISSIONS.PPE_SITE_READ],
+        },
+      } as any;
+      const res = {} as any;
+
+      // 1. Endpoint yêu cầu quyền PPE_SITE_READ -> ĐƯỢC PHÉP
+      const siteReadMiddleware = requirePermission(PERMISSIONS.PPE_SITE_READ);
+      let passedSiteRead = false;
+      await siteReadMiddleware(req, res, (err) => {
+        if (!err) passedSiteRead = true;
+      });
+      assert.strictEqual(passedSiteRead, true);
+
+      // 2. Endpoint yêu cầu quyền USER_DELETE -> PHẢI BỊ CHẶN 403 (không được admin bypass)
+      const userDeleteMiddleware = requirePermission(PERMISSIONS.USER_DELETE);
+      let deleteError: any = null;
+      await userDeleteMiddleware(req, res, (err) => {
+        deleteError = err;
+      });
+      assert.ok(deleteError instanceof AppError);
+      assert.strictEqual(deleteError.statusCode, 403);
+      assert.strictEqual(deleteError.code, ERROR_CODE.FORBIDDEN);
+
+      // 3. Endpoint yêu cầu SYSTEM_CONFIG_MANAGE -> PHẢI BỊ CHẶN 403
+      const configMiddleware = requirePermission(PERMISSIONS.SYSTEM_CONFIG_MANAGE);
+      let configError: any = null;
+      await configMiddleware(req, res, (err) => {
+        configError = err;
+      });
+      assert.ok(configError instanceof AppError);
+      assert.strictEqual(configError.statusCode, 403);
+      assert.strictEqual(configError.code, ERROR_CODE.FORBIDDEN);
+    });
+
+    it("should reject API Key when attempting access to permissions outside its granted array", async () => {
+      (permissionCacheService as any).cache.set("operator-role-id", {
+        permissions: new Set([PERMISSIONS.PPE_INCIDENT_READ]),
+        expiresAt: Date.now() + 60000,
+      });
+
+      const req = {
+        user: {
+          id: "operator-user-id",
+          email: "operator@ppe.local",
+          role: "OPERATOR",
+          roleId: "operator-role-id",
+          permissions: [PERMISSIONS.PPE_INCIDENT_READ],
+        },
+        apiKey: {
+          id: "key-456",
+          name: "Incident Reader Key",
+          prefix: "ppe_live_xyz",
+          permissions: [PERMISSIONS.PPE_INCIDENT_READ],
+        },
+      } as any;
+      const res = {} as any;
+
+      const incidentReadMiddleware = requirePermission(PERMISSIONS.PPE_INCIDENT_READ);
+      let passedRead = false;
+      await incidentReadMiddleware(req, res, (err) => {
+        if (!err) passedRead = true;
+      });
+      assert.strictEqual(passedRead, true);
+
+      const roleDeleteMiddleware = requirePermission(PERMISSIONS.ROLE_DELETE);
+      let roleDeleteError: any = null;
+      await roleDeleteMiddleware(req, res, (err) => {
+        roleDeleteError = err;
+      });
+      assert.ok(roleDeleteError instanceof AppError);
+      assert.strictEqual(roleDeleteError.statusCode, 403);
     });
   });
 });
