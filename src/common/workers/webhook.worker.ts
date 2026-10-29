@@ -1,9 +1,15 @@
+import http from "node:http";
+import https from "node:https";
 import { Worker, Job } from "bullmq";
 import IORedis from "ioredis";
 import { envConfig } from "../../config/env.config";
 import { WEBHOOK_QUEUE_NAME, WebhookJobData } from "../queues/webhook.queue";
 import { decryptSecret, signHmacSha256 } from "../helpers/crypto.helper";
-import { isPublicHttpUrl, resolveAndValidateDns } from "../helpers/url.helper";
+import {
+  isPublicHttpUrl,
+  resolveAndValidateDns,
+  isPrivateOrReservedIp,
+} from "../helpers/url.helper";
 import { integrationRepository } from "../../modules/integration/integration.repository";
 import {
   WEBHOOK_STATUS,
@@ -19,6 +25,82 @@ export interface WebhookExecutionResult {
   statusCode?: number;
   responseBody?: string;
   error?: string;
+}
+
+/**
+ * SEC-10 Fix: Tạo HTTP Fetcher ghim trực tiếp socket kết nối đến IP cụ thể (pinnedIp)
+ * đã được thẩm định an toàn (không phải Private, Loopback, Cloud Metadata hay Reserved IP).
+ * Triệt tiêu hoàn toàn khả năng khai thác qua Time-of-Check to Time-of-Use (TOCTOU) DNS Rebinding.
+ */
+function createPinnedFetcher(
+  pinnedIp: string,
+): (url: string, init: RequestInit) => Promise<Response> {
+  return (urlStr: string, init: RequestInit) => {
+    return new Promise((resolve, reject) => {
+      // Defense-in-depth: Kiểm tra lại IP trước khi mở socket
+      if (isPrivateOrReservedIp(pinnedIp)) {
+        return reject(
+          new Error(
+            `SSRF Blocked: Pinned IP '${pinnedIp}' is a private or reserved address`,
+          ),
+        );
+      }
+
+      const parsed = new URL(urlStr);
+      const isHttps = parsed.protocol === "https:";
+      const client = isHttps ? https : http;
+      const defaultPort = isHttps ? 443 : 80;
+      const port = parsed.port ? parseInt(parsed.port, 10) : defaultPort;
+
+      const req = (client as typeof http).request(
+        {
+          protocol: parsed.protocol,
+          hostname: parsed.hostname,
+          port,
+          path: parsed.pathname + parsed.search,
+          method: init.method || "POST",
+          headers: init.headers as Record<string, string>,
+          signal: (init.signal || undefined) as AbortSignal | undefined,
+          // Ghim cứng DNS lookup vào IP đã được kiểm chứng an toàn
+          lookup: (_hostname: string, opts: any, cb: any) => {
+            const family = pinnedIp.includes(":") ? 6 : 4;
+            if (opts && opts.all) {
+              cb(null, [{ address: pinnedIp, family }]);
+            } else {
+              cb(null, pinnedIp, family);
+            }
+          },
+        },
+        (res) => {
+          const chunks: Buffer[] = [];
+          res.on("data", (chunk) => {
+            chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+          });
+          res.on("end", () => {
+            const rawBody = Buffer.concat(chunks).toString("utf8");
+            resolve({
+              ok: (res.statusCode || 0) >= 200 && (res.statusCode || 0) < 300,
+              status: res.statusCode || 500,
+              headers: {
+                get: (name: string) => {
+                  const val = res.headers[name.toLowerCase()];
+                  return Array.isArray(val) ? val.join(", ") : val || null;
+                },
+              },
+              text: async () => rawBody,
+            } as unknown as Response);
+          });
+        },
+      );
+
+      req.on("error", reject);
+
+      if (init.body) {
+        req.write(init.body);
+      }
+      req.end();
+    });
+  };
 }
 
 export class WebhookWorker {
@@ -107,7 +189,9 @@ export class WebhookWorker {
       return { success: false, error: errorMsg };
     }
 
-    // SEC (F-03): Thực hiện DNS resolution check chống DNS Rebinding trên mọi môi trường
+    let pinnedIp: string | undefined;
+
+    // SEC (F-03 & SEC-10): Thực hiện DNS resolution check chống DNS Rebinding trên mọi môi trường
     // (production, staging, development) với allowPrivate: false.
     // Bỏ qua khi customFetcher được cung cấp (mock harness trong unit tests).
     if (!customFetcher) {
@@ -116,8 +200,8 @@ export class WebhookWorker {
         const dnsCheck = await resolveAndValidateDns(parsed.hostname, {
           allowPrivate: false,
         });
-        if (!dnsCheck.isValid) {
-          const errorMsg = `SSRF DNS Check Failed: ${dnsCheck.reason}`;
+        if (!dnsCheck.isValid || !dnsCheck.ips || dnsCheck.ips.length === 0) {
+          const errorMsg = `SSRF DNS Check Failed: ${dnsCheck.reason || "No valid public IP resolved"}`;
           await integrationRepository
             .updateDeliveryStatus(data.deliveryId, {
               status: WEBHOOK_STATUS.FAILED,
@@ -127,6 +211,7 @@ export class WebhookWorker {
             .catch(() => {});
           return { success: false, error: errorMsg };
         }
+        pinnedIp = dnsCheck.ips[0];
       } catch (err: any) {
         return { success: false, error: `Invalid URL: ${err?.message}` };
       }
@@ -177,7 +262,9 @@ export class WebhookWorker {
     let responseText = "";
 
     try {
-      const fetchFn = customFetcher || fetch;
+      // SEC-10 Fix: Ghim chặt kết nối socket đến IP đã kiểm tra (pinnedIp) chống TOCTOU DNS Rebinding
+      const fetchFn =
+        customFetcher || (pinnedIp ? createPinnedFetcher(pinnedIp) : fetch);
       const res = await fetchFn(data.url, {
         method: "POST",
         redirect: "manual", // SEC-02: Chặn tự động chuyển hướng HTTP (chống SSRF qua 301/302 redirect sang IP nội bộ)

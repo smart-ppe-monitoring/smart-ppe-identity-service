@@ -19,6 +19,9 @@ import {
   findAllUserSchema,
 } from "../src/modules/users/user.validation";
 import { swaggerSpec } from "../src/config/swagger.config";
+import { r2Config } from "../src/config/r2.config";
+import { WebhookWorker } from "../src/common/workers/webhook.worker";
+import { integrationRepository } from "../src/modules/integration/integration.repository";
 
 describe("User Lifecycle & Security Hardening Test Suite", () => {
   let userService: UserService;
@@ -225,6 +228,14 @@ describe("User Lifecycle & Security Hardening Test Suite", () => {
         return u;
       },
       saveRefreshToken: async () => ({}) as any,
+      findByPhone: async () => null,
+      updateProfile: async (userId: string, data: any) => {
+        const u = userId === regularUser.id ? regularUser : adminUser;
+        if (data.avatarUrl !== undefined) u.avatarUrl = data.avatarUrl;
+        if (data.fullName !== undefined) u.fullName = data.fullName;
+        if (data.phoneNumber !== undefined) u.phoneNumber = data.phoneNumber;
+        return u;
+      },
       createAuditLog: async (data: any) => {
         auditLogs.push(data);
         return data;
@@ -677,6 +688,135 @@ describe("User Lifecycle & Security Hardening Test Suite", () => {
           return true;
         },
       );
+    });
+  });
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // 6. Avatar Storage Security & IDOR Deletion Prevention (SEC-09)
+  // ──────────────────────────────────────────────────────────────────────────
+  describe("6. Avatar Storage Security & IDOR Deletion Prevention (SEC-09)", () => {
+    let deletedR2Files: string[] = [];
+
+    beforeEach(() => {
+      deletedR2Files = [];
+      r2Config.publicBaseUrl = "https://pub-r2.smart-ppe.com";
+      (authService as any).r2Service = {
+        getPublicUrl: (key: string) => `https://pub-r2.smart-ppe.com/${key}`,
+        deleteFile: async (key: string) => {
+          deletedR2Files.push(key);
+        },
+      };
+    });
+
+    it("should reject updateProfile when avatarUrl points to another user's R2 storage prefix", async () => {
+      const victimAvatarUrl = `https://pub-r2.smart-ppe.com/avatars/${adminUserId}/avatar.png`;
+
+      await assert.rejects(
+        async () => {
+          await authService.updateProfile(regularUser.id, {
+            avatarUrl: victimAvatarUrl,
+          });
+        },
+        (err: any) => {
+          assert.ok(err instanceof AppError);
+          assert.strictEqual(err.statusCode, 403);
+          assert.strictEqual(err.code, ERROR_CODE.FORBIDDEN);
+          assert.match(err.message, /Đường dẫn ảnh đại diện không hợp lệ/);
+          return true;
+        },
+      );
+    });
+
+    it("should allow updateProfile when avatarUrl points to the user's own R2 storage prefix", async () => {
+      const ownAvatarUrl = `https://pub-r2.smart-ppe.com/avatars/${regularUser.id}/avatar.png`;
+
+      await authService.updateProfile(regularUser.id, {
+        avatarUrl: ownAvatarUrl,
+      });
+
+      assert.strictEqual(regularUser.avatarUrl, ownAvatarUrl);
+    });
+
+    it("should reject confirmAvatarUpload if key does not match user's prefix", async () => {
+      await assert.rejects(
+        async () => {
+          await authService.confirmAvatarUpload(regularUser.id, {
+            key: `avatars/${adminUserId}/admin-photo.png`,
+          });
+        },
+        (err: any) => {
+          assert.ok(err instanceof AppError);
+          assert.strictEqual(err.statusCode, 403);
+          assert.strictEqual(err.code, ERROR_CODE.FORBIDDEN);
+          return true;
+        },
+      );
+    });
+
+    it("should NOT delete old avatar if old avatar belongs to another user (anti-IDOR deletion)", async () => {
+      // Simulate poisoned old avatar in DB
+      regularUser.avatarUrl = `https://pub-r2.smart-ppe.com/avatars/${adminUserId}/victim.png`;
+
+      const newKey = `avatars/${regularUser.id}/new-avatar.png`;
+      const resultUrl = await authService.confirmAvatarUpload(regularUser.id, {
+        key: newKey,
+      });
+
+      assert.strictEqual(resultUrl, `https://pub-r2.smart-ppe.com/${newKey}`);
+      // Must NOT have called deleteFile for victim's file!
+      assert.strictEqual(deletedR2Files.length, 0);
+    });
+
+    it("should delete old avatar when old avatar legitimately belongs to the same user", async () => {
+      const oldKey = `avatars/${regularUser.id}/old-avatar.png`;
+      regularUser.avatarUrl = `https://pub-r2.smart-ppe.com/${oldKey}`;
+
+      const newKey = `avatars/${regularUser.id}/new-avatar.png`;
+      await authService.confirmAvatarUpload(regularUser.id, {
+        key: newKey,
+      });
+
+      assert.strictEqual(deletedR2Files.length, 1);
+      assert.strictEqual(deletedR2Files[0], oldKey);
+    });
+  });
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // 7. Webhook Dispatcher DNS Rebinding & SSRF Protection (SEC-10)
+  // ──────────────────────────────────────────────────────────────────────────
+  describe("7. Webhook Dispatcher DNS Rebinding & SSRF Protection (SEC-10)", () => {
+    beforeEach(() => {
+      integrationRepository.updateDeliveryStatus = async () => ({}) as any;
+    });
+
+    it("should block webhook delivery to private or loopback IP addresses immediately", async () => {
+      const worker = new WebhookWorker();
+      const result = await worker.processJob({
+        deliveryId: "deliv-1",
+        webhookEndpointId: "wh-1",
+        url: "http://127.0.0.1:8080/callback",
+        event: "USER_CREATED",
+        payload: { test: true },
+        encryptedSecret: "any",
+      });
+
+      assert.strictEqual(result.success, false);
+      assert.match(result.error || "", /SSRF.*Failed/);
+    });
+
+    it("should block webhook delivery to cloud metadata service (169.254.169.254)", async () => {
+      const worker = new WebhookWorker();
+      const result = await worker.processJob({
+        deliveryId: "deliv-2",
+        webhookEndpointId: "wh-2",
+        url: "http://169.254.169.254/latest/meta-data",
+        event: "USER_CREATED",
+        payload: { test: true },
+        encryptedSecret: "any",
+      });
+
+      assert.strictEqual(result.success, false);
+      assert.match(result.error || "", /SSRF.*Failed/);
     });
   });
 });

@@ -1010,6 +1010,24 @@ export class AuthService {
       }
     }
 
+    // SEC-09 Fix: Nếu người dùng cập nhật avatarUrl trỏ tới R2 bucket của hệ thống,
+    // bắt buộc URL phải trỏ tới thư mục của chính user (avatars/${userId}/).
+    // Tuyệt đối không cho phép gán avatarUrl trỏ tới tệp của người dùng khác.
+    if (data.avatarUrl) {
+      const base = r2Config.publicBaseUrl.replace(/\/$/, "");
+      if (data.avatarUrl.startsWith(base)) {
+        const key = data.avatarUrl.slice(base.length + 1);
+        const expectedPrefix = `avatars/${userId}/`;
+        if (!key.startsWith(expectedPrefix)) {
+          throw new AppError(
+            "Đường dẫn ảnh đại diện không hợp lệ (không thuộc sở hữu của tài khoản)",
+            403,
+            ERROR_CODE.FORBIDDEN,
+          );
+        }
+      }
+    }
+
     await this.repository.updateProfile(userId, data);
 
     notificationDispatcher
@@ -1377,8 +1395,9 @@ export class AuthService {
         console.error("Failed to dispatch avatar notification:", err),
       );
 
-    // Xóa file cũ (thực hiện sau khi DB đã cập nhật thành công)
-    if (oldKey && oldKey !== data.key) {
+    // SEC-09 Fix: Chỉ xóa file cũ nếu file cũ thực sự thuộc về chính user này (khớp tiền tố avatars/${userId}/)
+    // Chống IDOR Storage Deletion thông qua việc đầu độc user.avatarUrl trỏ tới file của người dùng khác trên R2
+    if (oldKey && oldKey !== data.key && oldKey.startsWith(expectedPrefix)) {
       await this.r2Service.deleteFile(oldKey).catch(() => {
         // Không throw nếu xóa file cũ thất bại — không ảnh hưởng đến flow chính
       });

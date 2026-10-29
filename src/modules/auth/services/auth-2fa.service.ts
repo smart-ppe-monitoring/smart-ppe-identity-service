@@ -233,6 +233,19 @@ export class Auth2FAService {
       );
     }
 
+    // SEC-08 Fix: Kiểm tra trạng thái khóa tài khoản trước khi kiểm tra mã 2FA
+    if (user.lockedUntil && user.lockedUntil > new Date()) {
+      const remainingMinutes = Math.max(
+        1,
+        Math.ceil((user.lockedUntil.getTime() - Date.now()) / (60 * 1000)),
+      );
+      throw new AppError(
+        `Tài khoản đã bị tạm khóa do nhập sai mã xác thực quá nhiều lần. Vui lòng thử lại sau ${remainingMinutes} phút hoặc đặt lại mật khẩu.`,
+        423,
+        ERROR_CODE.ACCOUNT_LOCKED,
+      );
+    }
+
     const cleanCode = data.code.trim();
     let isCodeValid = false;
 
@@ -270,11 +283,67 @@ export class Auth2FAService {
     }
 
     if (!isCodeValid) {
-      throw new AppError(
-        "Mã xác thực 2FA hoặc mã dự phòng không chính xác",
-        400,
-        ERROR_CODE.TWO_FACTOR_INVALID_CODE,
-      );
+      const MAX_FAILED_ATTEMPTS = 5;
+      const LOCKOUT_DURATION_MS = 15 * 60 * 1000;
+      const isLockoutExpired = user.lockedUntil && user.lockedUntil <= new Date();
+      const currentAttempts = isLockoutExpired
+        ? 0
+        : user.failedLoginAttempts || 0;
+      const nextAttempts = currentAttempts + 1;
+
+      if (nextAttempts >= MAX_FAILED_ATTEMPTS) {
+        const lockedUntil = new Date(Date.now() + LOCKOUT_DURATION_MS);
+        if (typeof this.repository.updateLockout === "function") {
+          await this.repository.updateLockout(user.id, {
+            failedLoginAttempts: nextAttempts,
+            lockedUntil,
+          });
+        }
+
+        if (typeof this.repository.createAuditLog === "function") {
+          await this.repository
+            .createAuditLog({
+              actorId: user.id,
+              action: AUDIT_ACTION.ACCOUNT_LOCKED,
+              targetType: AUDIT_TARGET_TYPE.USER,
+              targetId: user.id,
+              details: { failedAttempts: nextAttempts, lockedUntil, trigger: "2FA" },
+              ipAddress: metadata?.ipAddress,
+              userAgent: metadata?.userAgent,
+            })
+            .catch(() => {});
+        }
+
+        throw new AppError(
+          "Tài khoản đã bị tạm khóa 15 phút do nhập sai mã xác thực 2FA 5 lần liên tiếp. Vui lòng thử lại sau hoặc đặt lại mật khẩu.",
+          423,
+          ERROR_CODE.ACCOUNT_LOCKED,
+        );
+      } else {
+        if (typeof this.repository.updateLockout === "function") {
+          await this.repository.updateLockout(user.id, {
+            failedLoginAttempts: nextAttempts,
+            lockedUntil: null,
+          });
+        }
+        const remaining = MAX_FAILED_ATTEMPTS - nextAttempts;
+        throw new AppError(
+          `Mã xác thực 2FA hoặc mã dự phòng không chính xác. Bạn còn ${remaining} lần thử trước khi tài khoản bị khóa.`,
+          400,
+          ERROR_CODE.TWO_FACTOR_INVALID_CODE,
+        );
+      }
+    }
+
+    // SEC-08 Fix: Reset số lần thử sai và xóa cờ tạm khóa khi xác thực 2FA thành công
+    if (
+      (user.failedLoginAttempts > 0 || user.lockedUntil) &&
+      typeof this.repository.updateLockout === "function"
+    ) {
+      await this.repository.updateLockout(user.id, {
+        failedLoginAttempts: 0,
+        lockedUntil: null,
+      });
     }
 
     let userPermissions: string[] = [];

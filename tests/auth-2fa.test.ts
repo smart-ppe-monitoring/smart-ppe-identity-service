@@ -71,6 +71,8 @@ describe("Two-Factor Authentication (2FA / TOTP) Test Suite", () => {
       phoneNumber: null,
       avatarUrl: null,
       isActive: true,
+      failedLoginAttempts: 0,
+      lockedUntil: null,
       twoFactorEnabled: false,
       twoFactorSecret: null,
       twoFactorBackupCodes: null,
@@ -142,6 +144,16 @@ describe("Two-Factor Authentication (2FA / TOTP) Test Suite", () => {
       },
       updateBackupCodes: async (userId: string, backupHashed: string[]) => {
         mockUser.twoFactorBackupCodes = backupHashed;
+        return mockUser;
+      },
+      updateLockout: async (
+        userId: string,
+        data: { failedLoginAttempts: number; lockedUntil: Date | null },
+      ) => {
+        if (mockUser && mockUser.id === userId) {
+          mockUser.failedLoginAttempts = data.failedLoginAttempts;
+          mockUser.lockedUntil = data.lockedUntil;
+        }
         return mockUser;
       },
       revokeOtherSessions: async (userId: string, currentToken?: string) => {
@@ -441,6 +453,80 @@ describe("Two-Factor Authentication (2FA / TOTP) Test Suite", () => {
           return true;
         },
       );
+    });
+
+    it("verify2FALogin should increment failedLoginAttempts and lock account on 5th consecutive failure (SEC-08)", async () => {
+      mockUser.failedLoginAttempts = 0;
+      mockUser.lockedUntil = null;
+
+      const tempToken = jwt.sign(
+        { id: mockUser.id, purpose: "2FA_VERIFICATION" },
+        jwtConfig.tempSecret,
+        { expiresIn: "5m" },
+      );
+
+      // 4 wrong attempts -> failedLoginAttempts becomes 4, not yet locked
+      for (let i = 1; i <= 4; i++) {
+        await assert.rejects(
+          authService.verify2FALogin({ tempToken, code: "000000" }),
+          (err: any) => {
+            assert.equal(err instanceof AppError, true);
+            assert.equal(err.code, ERROR_CODE.TWO_FACTOR_INVALID_CODE);
+            assert.equal(err.statusCode, 400);
+            return true;
+          },
+        );
+        assert.equal(mockUser.failedLoginAttempts, i);
+        assert.equal(mockUser.lockedUntil, null);
+      }
+
+      // 5th wrong attempt -> Account locked (423 ACCOUNT_LOCKED)
+      await assert.rejects(
+        authService.verify2FALogin({ tempToken, code: "000000" }),
+        (err: any) => {
+          assert.equal(err instanceof AppError, true);
+          assert.equal(err.code, ERROR_CODE.ACCOUNT_LOCKED);
+          assert.equal(err.statusCode, 423);
+          return true;
+        },
+      );
+      assert.equal(mockUser.failedLoginAttempts, 5);
+      assert.ok(mockUser.lockedUntil);
+      assert.ok(mockUser.lockedUntil > new Date());
+
+      // Subsequent attempt while locked -> rejected immediately with 423 without checking TOTP
+      await assert.rejects(
+        authService.verify2FALogin({
+          tempToken,
+          code: generateTotpCode(rawSecret),
+        }),
+        (err: any) => {
+          assert.equal(err instanceof AppError, true);
+          assert.equal(err.code, ERROR_CODE.ACCOUNT_LOCKED);
+          assert.equal(err.statusCode, 423);
+          return true;
+        },
+      );
+    });
+
+    it("verify2FALogin should reset failedLoginAttempts to 0 upon successful verification (SEC-08)", async () => {
+      mockUser.failedLoginAttempts = 3;
+      mockUser.lockedUntil = null;
+
+      const tempToken = jwt.sign(
+        { id: mockUser.id, purpose: "2FA_VERIFICATION" },
+        jwtConfig.tempSecret,
+        { expiresIn: "5m" },
+      );
+      const validCode = generateTotpCode(rawSecret);
+
+      const result = await authService.verify2FALogin({
+        tempToken,
+        code: validCode,
+      });
+
+      assert.ok(result.accessToken);
+      assert.equal(mockUser.failedLoginAttempts, 0);
     });
   });
 
