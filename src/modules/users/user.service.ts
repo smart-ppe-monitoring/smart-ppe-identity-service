@@ -23,14 +23,22 @@ import {
   EventBusService,
 } from "../../common/services/event-bus.service";
 import { EVENT_NAMES } from "../../common/constants/event.constant";
+import { R2Service } from "../../common/services/r2.service";
+import { envConfig } from "../../config/env.config";
 
 export class UserService {
   private readonly repository: UserRepository;
   private readonly eventBus: EventBusService;
+  private readonly r2Service: R2Service;
 
-  constructor(repository?: UserRepository, eventBusService?: EventBusService) {
+  constructor(
+    repository?: UserRepository,
+    eventBusService?: EventBusService,
+    r2Service?: R2Service,
+  ) {
     this.repository = repository || new UserRepository();
     this.eventBus = eventBusService || eventBus;
+    this.r2Service = r2Service || new R2Service();
   }
 
   /**
@@ -244,8 +252,37 @@ export class UserService {
       }
     }
 
-    const result = await this.repository.softDelete(id, adminId);
+    // SEC-20: Tombstone pattern khi xóa mềm để giải phóng unique constraints (email, phone)
+    // chống tấn công Denial of Service khi người dùng tái đăng ký, đồng thời dọn dẹp file avatar trên R2.
+    const now = Date.now();
+    const tombstoneEmail = userToDelete.email
+      ? `deleted_${now}_${id}@tombstone.local`
+      : undefined;
+
+    const result = await this.repository.softDelete(id, adminId, {
+      email: tombstoneEmail,
+      phoneNumber: null,
+    });
     permissionCacheService.invalidateUser(id);
+
+    // Dọn dẹp avatar R2 của người dùng bị xóa mềm
+    if (userToDelete.avatarUrl) {
+      try {
+        let key: string | null = null;
+        const base = envConfig.r2.publicBaseUrl.replace(/\/$/, "");
+        if (base && userToDelete.avatarUrl.startsWith(base)) {
+          key = userToDelete.avatarUrl.slice(base.length + 1);
+        } else if (userToDelete.avatarUrl.includes(`avatars/${id}/`)) {
+          const idx = userToDelete.avatarUrl.indexOf(`avatars/${id}/`);
+          key = userToDelete.avatarUrl.slice(idx);
+        }
+        if (key && key.startsWith(`avatars/${id}/`)) {
+          this.r2Service.deleteFile(key).catch(() => {});
+        }
+      } catch {
+        // Bỏ qua lỗi dọn dẹp storage ngoài luồng chính
+      }
+    }
 
     await this.repository.createAuditLog({
       actorId: adminId,

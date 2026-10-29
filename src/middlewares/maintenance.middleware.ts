@@ -9,7 +9,7 @@ import {
   MAINTENANCE_STATUS,
   DEFAULT_MAINTENANCE_CONFIG,
 } from "../common/constants/maintenance.constant";
-import { isIpInWhitelist } from "../common/helpers/ip.helper";
+import { isIpInWhitelist, getClientIp } from "../common/helpers/ip.helper";
 import { extractTokenFromRequest } from "./auth.middleware";
 import { jwtKeyService } from "../common/services/jwt-key.service";
 
@@ -58,7 +58,8 @@ export function maintenanceGuard(options?: MaintenanceGuardOptions) {
       }
 
       // Check IP Whitelist Bypass (e.g. Developer VPN, QA office static IPs)
-      const clientIp = req.ip || req.socket?.remoteAddress || "";
+      // SEC-19: Lấy địa chỉ IP an toàn và chuẩn hóa chống giả mạo header X-Forwarded-For
+      const clientIp = getClientIp(req);
       const bypassIps = Array.isArray((config as any).bypassIps)
         ? ((config as any).bypassIps as string[])
         : [];

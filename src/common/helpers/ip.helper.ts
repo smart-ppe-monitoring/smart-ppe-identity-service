@@ -94,3 +94,15 @@ export function isIpInWhitelist(
 
   return false;
 }
+
+/**
+ * Trích xuất địa chỉ IP của Client một cách an toàn và chuẩn hóa.
+ * (SEC-19: Chống IP spoofing qua header X-Forwarded-For không tin cậy)
+ */
+export function getClientIp(req: {
+  ip?: string;
+  socket?: { remoteAddress?: string };
+}): string {
+  const raw = req.ip || req.socket?.remoteAddress || "";
+  return normalizeIp(raw);
+}

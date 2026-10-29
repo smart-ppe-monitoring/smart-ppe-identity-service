@@ -459,15 +459,27 @@ export class UserRepository {
     });
   }
 
-  async softDelete(id: string, adminId: string) {
+  async softDelete(
+    id: string,
+    adminId: string,
+    tombstone?: { email?: string; phoneNumber?: string | null },
+  ) {
+    const data: Prisma.UserUpdateInput = {
+      deletedAt: new Date(),
+      deletedBy: adminId,
+      isActive: false,
+      email:
+        tombstone?.email !== undefined
+          ? tombstone.email
+          : `deleted_${Date.now()}_${id}@tombstone.local`,
+      phoneNumber:
+        tombstone?.phoneNumber !== undefined ? tombstone.phoneNumber : null,
+    };
+
     return prisma.$transaction([
       prisma.user.update({
         where: { id },
-        data: {
-          deletedAt: new Date(),
-          deletedBy: adminId,
-          isActive: false,
-        },
+        data,
       }),
       prisma.refreshToken.deleteMany({
         where: { userId: id },
