@@ -83,15 +83,25 @@ export async function verifyGoogleIdToken(
     );
   }
 
-  // 2. Kiểm tra Audience nếu hệ thống có thiết lập GOOGLE_CLIENT_ID
-  if (expectedClientId && expectedClientId.trim()) {
-    if (payload.aud !== expectedClientId.trim()) {
-      throw new AppError(
-        "Google ID Token (aud) không khớp với Client ID của ứng dụng",
-        401,
-        ERROR_CODE.GOOGLE_AUTH_FAILED,
-      );
-    }
+  // 2. Kiểm tra Audience bắt buộc (SEC-13: Chống Audience Confusion / Unchecked Foreign ID Tokens)
+  const targetAudience =
+    (expectedClientId && expectedClientId.trim()) ||
+    (envConfig.google.clientId && envConfig.google.clientId.trim());
+
+  if (!targetAudience) {
+    throw new AppError(
+      "Google Client ID chưa được cấu hình trên hệ thống để xác thực Audience của token",
+      500,
+      ERROR_CODE.CONFIGURATION_ERROR,
+    );
+  }
+
+  if (payload.aud !== targetAudience) {
+    throw new AppError(
+      "Google ID Token (aud) không khớp với Client ID của ứng dụng",
+      401,
+      ERROR_CODE.GOOGLE_AUTH_FAILED,
+    );
   }
 
   // 3. Kiểm tra hạn dùng

@@ -431,20 +431,13 @@ export class AuthService {
 
     if (user) {
       // Tài khoản đã liên kết
-      if (user.deletedAt) {
+      // SEC-14: Ngăn tài khoản đã bị vô hiệu hóa/khóa bởi Admin tự động kích hoạt lại qua Google OAuth
+      if (user.deletedAt || !user.isActive) {
         throw new AppError(
           "Tài khoản đã bị vô hiệu hóa hoặc xóa.",
           403,
           ERROR_CODE.USER_INACTIVE,
         );
-      }
-      if (!user.isActive) {
-        // Tự động kích hoạt tài khoản vì Google đã xác minh email thành công
-        await this.repository.activateUser(user.id);
-        const refreshedUser = await this.repository.findById(user.id);
-        if (refreshedUser) {
-          user = refreshedUser;
-        }
       }
     } else {
       // 2. Nếu chưa liên kết qua UserSocial, kiểm tra theo email
@@ -809,11 +802,27 @@ export class AuthService {
       );
     }
 
+    let userPermissions: string[] = [];
+    try {
+      if (user.role.name === "ADMIN") {
+        userPermissions = Object.values(PERMISSIONS);
+      } else if (user.roleId) {
+        const permsSet = await permissionCacheService.getRolePermissions(user.roleId);
+        userPermissions = Array.from(permsSet);
+      }
+    } catch {
+      if (user.role.name === "ADMIN") {
+        userPermissions = Object.values(PERMISSIONS);
+      }
+    }
+
+    // SEC-15: Bổ sung claim permissions vào Access Token khi refresh để satellite services xác thực offline hợp lệ
     const newPayload = {
       id: user.id,
       email: user.email,
       role: user.role.name,
       roleId: user.roleId,
+      permissions: userPermissions,
       purpose: JWT_PURPOSE.ACCESS,
     };
 

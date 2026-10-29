@@ -38,9 +38,12 @@ describe("Google OAuth2 Login & Account Linking Test Suite", () => {
   let activatedUsers: Array<string> = [];
 
   const originalFetch = globalThis.fetch;
+  const originalGoogleClientId = envConfig.google.clientId;
   const roleId = "a0000000-0000-0000-0000-000000000001";
 
   beforeEach(() => {
+    (envConfig.google as any).clientId =
+      "test-google-client-id.apps.googleusercontent.com";
     auditLogs = [];
     savedRefreshTokens = [];
     socialLinks = [];
@@ -56,6 +59,7 @@ describe("Google OAuth2 Login & Account Linking Test Suite", () => {
 
   afterEach(() => {
     globalThis.fetch = originalFetch;
+    (envConfig.google as any).clientId = originalGoogleClientId;
   });
 
   // ── 1. Google Auth Helper Unit Tests ─────────────────────────────────────────
@@ -167,6 +171,7 @@ describe("Google OAuth2 Login & Account Linking Test Suite", () => {
         new Response(
           JSON.stringify({
             iss: "https://accounts.google.com",
+            aud: envConfig.google.clientId,
             sub: "123",
             email: "user@gmail.com",
             email_verified: true,
@@ -187,6 +192,7 @@ describe("Google OAuth2 Login & Account Linking Test Suite", () => {
         new Response(
           JSON.stringify({
             iss: "https://accounts.google.com",
+            aud: envConfig.google.clientId,
             sub: "123",
             email: "unverified@gmail.com",
             email_verified: false,
@@ -199,6 +205,28 @@ describe("Google OAuth2 Login & Account Linking Test Suite", () => {
         async () => verifyGoogleIdToken("unverified-email-token"),
         (err: AppError) =>
           err.statusCode === 400 && err.code === ERROR_CODE.VALIDATION_ERROR,
+      );
+    });
+
+    it("SEC-13: should reject token verification with CONFIGURATION_ERROR if Google Client ID is not configured", async () => {
+      (envConfig.google as any).clientId = "";
+      globalThis.fetch = async () =>
+        new Response(
+          JSON.stringify({
+            iss: "https://accounts.google.com",
+            aud: "any-app.apps.googleusercontent.com",
+            sub: "123",
+            email: "user@gmail.com",
+            email_verified: true,
+            exp: String(Math.floor(Date.now() / 1000) + 3600),
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+
+      await assert.rejects(
+        async () => verifyGoogleIdToken("valid-token"),
+        (err: AppError) =>
+          err.statusCode === 500 && err.code === ERROR_CODE.CONFIGURATION_ERROR,
       );
     });
 
@@ -610,6 +638,62 @@ describe("Google OAuth2 Login & Account Linking Test Suite", () => {
         async () => authService.googleLogin({ idToken: "valid-token" }),
         (err: AppError) =>
           err.statusCode === 403 && err.code === ERROR_CODE.USER_INACTIVE,
+      );
+    });
+
+    it("SEC-14: should reject login for inactive/deactivated linked user with 403 USER_INACTIVE without activating the account", async () => {
+      const deactivatedUser = {
+        id: "deactivated-linked-user",
+        email: "deactivated@gmail.com",
+        fullName: "Deactivated User",
+        phoneNumber: null,
+        avatarUrl: null,
+        isActive: false, // Explicitly deactivated by admin
+        twoFactorEnabled: false,
+        twoFactorSecret: null,
+        twoFactorBackupCodes: null,
+        deletedAt: null,
+        deletedBy: null,
+        roleId,
+        role: { id: roleId, name: ROLES.USER },
+      };
+
+      globalThis.fetch = async () =>
+        new Response(
+          JSON.stringify({
+            iss: "https://accounts.google.com",
+            sub: "google-sub-deactivated",
+            aud: envConfig.google.clientId,
+            email: "deactivated@gmail.com",
+            email_verified: true,
+            name: "Deactivated User",
+            exp: String(Math.floor(Date.now() / 1000) + 3600),
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+
+      let activateUserCalled = false;
+      mockRepository = {
+        findBySocial: async () => deactivatedUser as any,
+        activateUser: async () => {
+          activateUserCalled = true;
+          return deactivatedUser as any;
+        },
+      };
+
+      authService = new AuthService();
+      (authService as any).repository = mockRepository;
+
+      await assert.rejects(
+        async () => authService.googleLogin({ idToken: "valid-token" }),
+        (err: AppError) =>
+          err.statusCode === 403 && err.code === ERROR_CODE.USER_INACTIVE,
+      );
+
+      assert.equal(
+        activateUserCalled,
+        false,
+        "activateUser must NEVER be called when an inactive linked account logs in",
       );
     });
   });
