@@ -10,6 +10,7 @@ import { AUDIT_ACTION } from "../src/common/constants/audit-log.constant";
 import { ERROR_CODE } from "../src/common/errors/error-code";
 import { AppError } from "../src/common/errors/app-error";
 import { jwtConfig } from "../src/config/jwt.config";
+import { jwtKeyService } from "../src/common/services/jwt-key.service";
 import {
   generateTotpSecret,
   generateTotpCode,
@@ -580,13 +581,12 @@ describe("Two-Factor Authentication (2FA / TOTP) Test Suite", () => {
 
   describe("6. 2FA Temp Token Security & Isolation (SEC-01)", () => {
     it("should reject tempToken with 401 UNAUTHORIZED in authMiddleware", async () => {
-      const tempToken = jwt.sign(
+      const tempToken = jwtKeyService.signAccessToken(
         {
           id: mockUser.id,
           email: mockUser.email,
           purpose: "2FA_VERIFICATION",
         },
-        jwtConfig.accessSecret,
         { expiresIn: "5m" },
       );
 
@@ -607,13 +607,12 @@ describe("Two-Factor Authentication (2FA / TOTP) Test Suite", () => {
     });
 
     it("should not authenticate user with tempToken in optionalAuthMiddleware", async () => {
-      const tempToken = jwt.sign(
+      const tempToken = jwtKeyService.signAccessToken(
         {
           id: mockUser.id,
           email: mockUser.email,
           purpose: "2FA_VERIFICATION",
         },
-        jwtConfig.accessSecret,
         { expiresIn: "5m" },
       );
 
@@ -628,7 +627,7 @@ describe("Two-Factor Authentication (2FA / TOTP) Test Suite", () => {
     });
 
     it("should accept valid ACCESS token in authMiddleware", async () => {
-      const accessToken = jwt.sign(
+      const accessToken = jwtKeyService.signAccessToken(
         {
           id: mockUser.id,
           email: mockUser.email,
@@ -636,7 +635,6 @@ describe("Two-Factor Authentication (2FA / TOTP) Test Suite", () => {
           roleId: mockUser.roleId,
           purpose: "ACCESS",
         },
-        jwtConfig.accessSecret,
         { expiresIn: "15m" },
       );
 

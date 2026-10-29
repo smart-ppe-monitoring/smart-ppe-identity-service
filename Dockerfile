@@ -21,11 +21,11 @@ RUN pnpm build
 FROM node:22-alpine AS runner
 RUN apk add --no-cache libc6-compat openssl tini
 WORKDIR /app
+RUN mkdir -p /app/keys && chown -R node:node /app/keys
 USER node
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/prisma ./prisma
-COPY --chown=node:node keys ./keys/
 COPY package.json ./
 
 EXPOSE 9999

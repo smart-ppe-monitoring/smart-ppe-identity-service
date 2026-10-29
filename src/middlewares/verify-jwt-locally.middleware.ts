@@ -250,8 +250,11 @@ export function createVerifyJwtLocally(options: VerifyJwtLocallyOptions = {}) {
 
       // 2. Chặn các thuật toán không an toàn hoặc không được phép (chống Algorithm Confusion)
       if (alg !== JWT_ALGORITHM.RS256) {
-        // Cho phép HS256 nếu có cấu hình tương thích ngược
-        if (alg === JWT_ALGORITHM.HS256) {
+        // Chỉ cho phép HS256 nếu hệ thống được cấu hình tường minh chạy ở chế độ HS256
+        if (
+          jwtKeyService.getAlgorithm() === JWT_ALGORITHM.HS256 &&
+          alg === JWT_ALGORITHM.HS256
+        ) {
           const payload = jwt.verify(token, jwtConfig.accessSecret, {
             algorithms: [JWT_ALGORITHM.HS256],
           }) as AccessTokenClaims;
