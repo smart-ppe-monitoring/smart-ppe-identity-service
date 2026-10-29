@@ -103,6 +103,24 @@ export function createRequestIdMiddleware(secret: string) {
   };
 }
 
+function isExemptedGatewayPath(req: Request): boolean {
+  const path = req.path || "";
+  const originalUrl = req.originalUrl || "";
+  return (
+    path === "/health" ||
+    path.startsWith("/health/") ||
+    originalUrl === "/health" ||
+    originalUrl.startsWith("/health/") ||
+    originalUrl === "/api/v1/health" ||
+    originalUrl.startsWith("/api/v1/health/") ||
+    path === "/.well-known/jwks.json" ||
+    originalUrl.includes("/.well-known/jwks.json") ||
+    originalUrl.includes("security.txt") ||
+    originalUrl.startsWith("/api/docs") ||
+    originalUrl === "/openapi.json"
+  );
+}
+
 /**
  * Middleware xác thực bổ sung: chỉ cho phép request đến từ API Gateway tin cậy.
  * Dùng để bảo vệ các internal-only endpoint không cần public exposure.
@@ -116,8 +134,8 @@ export function requireGatewayOrigin(
   next: NextFunction,
 ): void {
   const secret = envConfig.gateway.internalSecret;
-  if (!secret) {
-    // Secret chưa cấu hình: bỏ qua kiểm tra (backward-compatible với monolith mode)
+  if (!secret || isExemptedGatewayPath(req)) {
+    // Secret chưa cấu hình hoặc endpoint public/liveness: bỏ qua kiểm tra (backward-compatible)
     return next();
   }
 
@@ -143,7 +161,7 @@ export function createRequireGatewayOrigin(secret: string) {
     res: Response,
     next: NextFunction,
   ): void {
-    if (!secret) {
+    if (!secret || isExemptedGatewayPath(req)) {
       return next();
     }
     if (!isTrustedGatewayRequest(req, secret)) {

@@ -48,9 +48,11 @@ export class UserService {
    */
   async isAdministrativeUser(user: {
     roleId?: string | null;
-    role?: { name: string } | null;
+    role?: { name: string } | string | null;
   }): Promise<boolean> {
-    if (user.role?.name === ROLES.ADMIN) {
+    const roleName =
+      typeof user.role === "string" ? user.role : user.role?.name;
+    if (roleName === ROLES.ADMIN) {
       return true;
     }
     if (user.roleId) {
@@ -65,21 +67,72 @@ export class UserService {
     return false;
   }
 
-  async findAll(query: UserQueryDto) {
+  async findAll(
+    query: UserQueryDto,
+    currentUser?: {
+      roleId?: string | null;
+      role?: { name: string } | string | null;
+    },
+  ) {
+    let result: { data: any[]; meta: any };
     if (
       query.search?.trim() &&
       typeof this.repository.searchFts === "function"
     ) {
-      return this.repository.searchFts(query);
+      result = await this.repository.searchFts(query);
+    } else {
+      result = await this.repository.findAll(query);
     }
-    return this.repository.findAll(query);
+
+    // SEC-23: Lọc bỏ metadata nhạy cảm (failedLoginAttempts, lockedUntil, mustChangePassword)
+    // đối với người dùng không phải Quản trị viên (non-admin) để ngăn chặn User Enumeration và tấn công Brute-force
+    const isAdmin = currentUser
+      ? await this.isAdministrativeUser(currentUser)
+      : false;
+
+    if (!isAdmin && Array.isArray(result.data)) {
+      result = {
+        ...result,
+        data: result.data.map((u: any) => {
+          const {
+            failedLoginAttempts,
+            lockedUntil,
+            mustChangePassword,
+            ...safeUser
+          } = u;
+          return safeUser;
+        }),
+      };
+    }
+
+    return result;
   }
 
-  async findById(id: string) {
+  async findById(
+    id: string,
+    currentUser?: {
+      roleId?: string | null;
+      role?: { name: string } | string | null;
+    },
+  ) {
     const user = await this.repository.findById(id);
 
     if (!user) {
       throw new AppError("User not found", 404, ERROR_CODE.NOT_FOUND);
+    }
+
+    // SEC-23: Lọc bỏ metadata nhạy cảm nếu người gọi không phải Quản trị viên
+    if (currentUser) {
+      const isAdmin = await this.isAdministrativeUser(currentUser);
+      if (!isAdmin) {
+        const {
+          failedLoginAttempts,
+          lockedUntil,
+          mustChangePassword,
+          ...safeUser
+        } = user as any;
+        return safeUser;
+      }
     }
 
     return user;

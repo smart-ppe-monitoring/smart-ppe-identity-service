@@ -192,6 +192,16 @@ export class AuthService {
     metadata?: { userAgent?: string; ipAddress?: string },
   ): Promise<LoginResponseDto> {
     const { email, password } = data;
+
+    // SEC-22: Giới hạn độ dài mật khẩu để chống Event Loop Starvation trong bcryptjs (CWE-400)
+    if (password && password.length > 128) {
+      throw new AppError(
+        "Password must not exceed 128 characters",
+        400,
+        ERROR_CODE.VALIDATION_ERROR,
+      );
+    }
+
     const user = await this.repository.findByEmail(email);
 
     if (!user) {
@@ -910,6 +920,15 @@ export class AuthService {
   async register(data: RegisterDto): Promise<void> {
     const { email, password, fullName } = data;
 
+    // SEC-22: Giới hạn độ dài mật khẩu để chống Event Loop Starvation trong bcryptjs (CWE-400)
+    if (password && password.length > 128) {
+      throw new AppError(
+        "Password must not exceed 128 characters",
+        400,
+        ERROR_CODE.VALIDATION_ERROR,
+      );
+    }
+
     const existing = await this.repository.findByEmail(email);
     if (existing) {
       // SEC (F-06): Trả về thành công trung lập (graceful return) để ngăn chặn tấn công dò quét tài khoản (Account Enumeration).
@@ -1055,6 +1074,18 @@ export class AuthService {
   }
 
   async updatePassword(userId: string, data: UpdatePasswordDto): Promise<void> {
+    // SEC-22: Giới hạn độ dài mật khẩu để chống Event Loop Starvation trong bcryptjs (CWE-400)
+    if (
+      (data.newPassword && data.newPassword.length > 128) ||
+      (data.oldPassword && data.oldPassword.length > 128)
+    ) {
+      throw new AppError(
+        "Password must not exceed 128 characters",
+        400,
+        ERROR_CODE.VALIDATION_ERROR,
+      );
+    }
+
     const user = await this.repository.findById(userId);
     if (!user) {
       throw new AppError("User not found", 404, ERROR_CODE.NOT_FOUND);
