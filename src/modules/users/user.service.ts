@@ -77,7 +77,7 @@ export class UserService {
     return user;
   }
 
-  async create(data: CreateUserDto) {
+  async create(data: CreateUserDto, actorId?: string) {
     const existing = await this.repository.findByEmail(data.email);
 
     if (existing) {
@@ -86,6 +86,39 @@ export class UserService {
         409,
         ERROR_CODE.DUPLICATE_ENTRY,
       );
+    }
+
+    let targetRole: { id: string; name: string } | null = null;
+    if (typeof (this.repository as any).findRoleById === "function") {
+      targetRole = await (this.repository as any).findRoleById(data.roleId);
+      if (!targetRole) {
+        throw new AppError("Vai trò không tồn tại", 404, ERROR_CODE.NOT_FOUND);
+      }
+    }
+
+    const isTargetAdmin = await this.isAdministrativeUser({
+      roleId: data.roleId,
+      role: targetRole,
+    });
+
+    // Vertical hierarchy check: Only administrative users can create other administrative users
+    if (isTargetAdmin) {
+      if (!actorId) {
+        throw new AppError(
+          "Bạn không có quyền khởi tạo tài khoản Quản trị viên (Admin)",
+          403,
+          ERROR_CODE.FORBIDDEN,
+        );
+      }
+      const actor = await this.findById(actorId);
+      const isActorAdmin = await this.isAdministrativeUser(actor);
+      if (!isActorAdmin) {
+        throw new AppError(
+          "Bạn không có quyền khởi tạo tài khoản Quản trị viên (Admin)",
+          403,
+          ERROR_CODE.FORBIDDEN,
+        );
+      }
     }
 
     const passwordHash = await bcrypt.hash(data.password, 10);

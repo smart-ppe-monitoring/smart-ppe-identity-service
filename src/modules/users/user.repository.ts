@@ -343,6 +343,13 @@ export class UserRepository {
     });
   }
 
+  findRoleById(id: string) {
+    return prisma.role.findUnique({
+      where: { id },
+      select: { id: true, name: true },
+    });
+  }
+
   create(data: {
     email?: string;
     passwordHash?: string;

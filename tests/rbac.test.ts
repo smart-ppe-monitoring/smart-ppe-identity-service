@@ -9,6 +9,7 @@ import { PERMISSIONS } from "../src/common/constants/permission.constant";
 import { ROLES } from "../src/common/constants/role.constant";
 import { AppError } from "../src/common/errors/app-error";
 import { ERROR_CODE } from "../src/common/errors/error-code";
+import { RbacService } from "../src/modules/rbac/rbac.service";
 
 describe("Dynamic RBAC Permission Middleware", () => {
   beforeEach(() => {
@@ -164,5 +165,229 @@ describe("Dynamic RBAC Permission Middleware", () => {
     permissionCacheService.invalidateRole(mockRoleId);
 
     assert.equal((permissionCacheService as any).cache.has(mockRoleId), false);
+  });
+
+  describe("RbacService: Role & Permission Assignment Security (SEC-04)", () => {
+    const adminRoleId = "11111111-1111-1111-1111-111111111111";
+    const operatorRoleId = "22222222-2222-2222-2222-222222222222";
+    const targetCustomRoleId = "33333333-3333-3333-3333-333333333333";
+
+    const adminUserId = "admin-user-uuid";
+    const operatorUserId = "operator-user-uuid";
+
+    const permReadId = "perm-user-read-uuid";
+    const permAssignId = "perm-role-permission-assign-uuid";
+    const permSystemConfigId = "perm-system-config-uuid";
+
+    const permissionsMap: Record<string, { id: string; name: string }> = {
+      [permReadId]: { id: permReadId, name: PERMISSIONS.USER_READ },
+      [permAssignId]: {
+        id: permAssignId,
+        name: PERMISSIONS.ROLE_PERMISSION_ASSIGN,
+      },
+      [permSystemConfigId]: {
+        id: permSystemConfigId,
+        name: PERMISSIONS.SYSTEM_CONFIG_MANAGE,
+      },
+    };
+
+    let rbacService: RbacService;
+
+    beforeEach(() => {
+      permissionCacheService.clear();
+
+      // Operator has USER_READ and ROLE_PERMISSION_ASSIGN (but NOT SYSTEM_CONFIG_MANAGE)
+      (permissionCacheService as any).cache.set(operatorRoleId, {
+        permissions: new Set([
+          PERMISSIONS.USER_READ,
+          PERMISSIONS.ROLE_PERMISSION_ASSIGN,
+        ]),
+        expiresAt: Date.now() + 60000,
+      });
+
+      // Admin has all permissions
+      (permissionCacheService as any).cache.set(adminRoleId, {
+        permissions: new Set([
+          PERMISSIONS.USER_READ,
+          PERMISSIONS.ROLE_PERMISSION_ASSIGN,
+          PERMISSIONS.SYSTEM_CONFIG_MANAGE,
+        ]),
+        expiresAt: Date.now() + 60000,
+      });
+
+      const roles: Record<string, any> = {
+        [adminRoleId]: {
+          id: adminRoleId,
+          name: ROLES.ADMIN,
+          isSystem: true,
+          permissions: [{ id: permReadId }, { id: permAssignId }],
+        },
+        [operatorRoleId]: {
+          id: operatorRoleId,
+          name: "OPERATOR",
+          isSystem: false,
+          permissions: [{ id: permReadId }, { id: permAssignId }],
+        },
+        [targetCustomRoleId]: {
+          id: targetCustomRoleId,
+          name: "CUSTOM_ROLE",
+          isSystem: false,
+          permissions: [{ id: permReadId }],
+        },
+      };
+
+      const users: Record<string, any> = {
+        [adminUserId]: {
+          id: adminUserId,
+          roleId: adminRoleId,
+          role: { id: adminRoleId, name: ROLES.ADMIN },
+        },
+        [operatorUserId]: {
+          id: operatorUserId,
+          roleId: operatorRoleId,
+          role: { id: operatorRoleId, name: "OPERATOR" },
+        },
+      };
+
+      const mockRepo: any = {
+        findRoleById: async (id: string) => {
+          const r = roles[id];
+          if (!r) throw new AppError("Role not found", 404, ERROR_CODE.NOT_FOUND);
+          return r;
+        },
+        findPermissionsByIds: async (ids: string[]) =>
+          ids.map((id) => permissionsMap[id]).filter(Boolean),
+        findPermissionByName: async (name: string) =>
+          Object.values(permissionsMap).find((p) => p.name === name) || null,
+        syncRolePermissions: async (roleId: string, permissionIds: string[]) => {
+          roles[roleId].permissions = permissionIds.map((id) => ({ id }));
+          return roles[roleId];
+        },
+        createAuditLog: async () => {},
+        findUserById: async (id: string) => users[id] || null,
+        createRole: async (data: any) => ({
+          id: "new-role-uuid",
+          ...data,
+          permissions: (data.permissionIds || []).map((id: string) => ({ id })),
+        }),
+        findRoleByName: async () => null,
+      };
+
+      rbacService = new RbacService(mockRepo);
+    });
+
+    it("should prevent non-admin from modifying permissions of the ADMIN role", async () => {
+      await assert.rejects(
+        async () => {
+          await rbacService.syncRolePermissions(
+            adminRoleId,
+            [permReadId, permAssignId],
+            { actorId: operatorUserId },
+          );
+        },
+        (err: any) => {
+          assert.ok(err instanceof AppError);
+          assert.strictEqual(err.statusCode, 403);
+          assert.strictEqual(err.code, ERROR_CODE.FORBIDDEN);
+          assert.match(err.message, /Chỉ Quản trị viên/);
+          return true;
+        },
+      );
+    });
+
+    it("should prevent non-admin from modifying their own role's permissions (anti-self-escalation)", async () => {
+      await assert.rejects(
+        async () => {
+          await rbacService.syncRolePermissions(
+            operatorRoleId,
+            [permReadId],
+            { actorId: operatorUserId },
+          );
+        },
+        (err: any) => {
+          assert.ok(err instanceof AppError);
+          assert.strictEqual(err.statusCode, 403);
+          assert.strictEqual(err.code, ERROR_CODE.FORBIDDEN);
+          assert.match(
+            err.message,
+            /Không được phép tự gán hoặc thay đổi quyền cho vai trò của chính mình/,
+          );
+          return true;
+        },
+      );
+    });
+
+    it("should reject non-admin assigning permissions beyond their own permissions (subset validation)", async () => {
+      await assert.rejects(
+        async () => {
+          // Operator attempts to assign SYSTEM_CONFIG_MANAGE which operator does not have
+          await rbacService.syncRolePermissions(
+            targetCustomRoleId,
+            [permReadId, permSystemConfigId],
+            { actorId: operatorUserId },
+          );
+        },
+        (err: any) => {
+          assert.ok(err instanceof AppError);
+          assert.strictEqual(err.statusCode, 403);
+          assert.strictEqual(err.code, ERROR_CODE.FORBIDDEN);
+          assert.match(err.message, /Subset Validation/);
+          return true;
+        },
+      );
+    });
+
+    it("should reject non-admin from granting ROLE_PERMISSION_ASSIGN delegation permission", async () => {
+      await assert.rejects(
+        async () => {
+          // Operator has ROLE_PERMISSION_ASSIGN, but cannot delegate this admin power to another role
+          await rbacService.syncRolePermissions(
+            targetCustomRoleId,
+            [permReadId, permAssignId],
+            { actorId: operatorUserId },
+          );
+        },
+        (err: any) => {
+          assert.ok(err instanceof AppError);
+          assert.strictEqual(err.statusCode, 403);
+          assert.strictEqual(err.code, ERROR_CODE.FORBIDDEN);
+          assert.match(err.message, /đặc quyền quản trị vai trò/);
+          return true;
+        },
+      );
+    });
+
+    it("should allow ADMIN to sync permissions with any valid permissions", async () => {
+      const result = await rbacService.syncRolePermissions(
+        targetCustomRoleId,
+        [permReadId, permSystemConfigId],
+        { actorId: adminUserId },
+      );
+
+      assert.ok(result);
+      assert.strictEqual(result.id, targetCustomRoleId);
+    });
+
+    it("should enforce subset validation on createRole when called by non-admin", async () => {
+      await assert.rejects(
+        async () => {
+          await rbacService.createRole(
+            {
+              name: "ILLEGAL_NEW_ROLE",
+              description: "Test",
+              permissionIds: [permSystemConfigId],
+            },
+            { actorId: operatorUserId },
+          );
+        },
+        (err: any) => {
+          assert.ok(err instanceof AppError);
+          assert.strictEqual(err.statusCode, 403);
+          assert.strictEqual(err.code, ERROR_CODE.FORBIDDEN);
+          assert.match(err.message, /Subset Validation/);
+          return true;
+        },
+      );
+    });
   });
 });

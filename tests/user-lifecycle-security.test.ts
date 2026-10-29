@@ -156,6 +156,24 @@ describe("User Lifecycle & Security Hardening Test Suite", () => {
         return data;
       },
       countActiveAdmins: async () => 1,
+      findByEmail: async (email: string) => {
+        if (email === regularUser.email) return regularUser;
+        if (email === adminUser.email) return adminUser;
+        return null;
+      },
+      findRoleById: async (id: string) => {
+        if (id === adminRoleId) return { id: adminRoleId, name: ROLES.ADMIN };
+        if (id === userRoleId) return { id: userRoleId, name: ROLES.USER };
+        return null;
+      },
+      create: async (data: any) => ({
+        id: "new-user-uuid",
+        ...data,
+        role: {
+          id: data.roleId,
+          name: data.roleId === adminRoleId ? ROLES.ADMIN : ROLES.USER,
+        },
+      }),
     };
 
     mockAuthRepo = {
@@ -555,6 +573,110 @@ describe("User Lifecycle & Security Hardening Test Suite", () => {
 
       assert.ok(paths["/users/{id}/reset-password"]);
       assert.ok(paths["/users/{id}/reset-password"].post);
+    });
+  });
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // 5. Role Hierarchy & Privilege Escalation Guard (SEC-03)
+  // ──────────────────────────────────────────────────────────────────────────
+  describe("5. Role Hierarchy & Privilege Escalation Guard (SEC-03)", () => {
+    it("should prevent non-admin from creating an ADMIN account with 403 Forbidden", async () => {
+      await assert.rejects(
+        async () => {
+          await userService.create(
+            {
+              email: "newadmin@example.com",
+              password: "Password123!",
+              fullName: "Fake Admin",
+              roleId: adminRoleId,
+            },
+            regularUser.id,
+          );
+        },
+        (err: any) => {
+          assert.ok(err instanceof AppError);
+          assert.strictEqual(err.statusCode, 403);
+          assert.strictEqual(err.code, ERROR_CODE.FORBIDDEN);
+          assert.match(
+            err.message,
+            /Bạn không có quyền khởi tạo tài khoản Quản trị viên/,
+          );
+          return true;
+        },
+      );
+    });
+
+    it("should reject creating an ADMIN account if actorId is not provided", async () => {
+      await assert.rejects(
+        async () => {
+          await userService.create({
+            email: "anonadmin@example.com",
+            password: "Password123!",
+            fullName: "Anon Admin",
+            roleId: adminRoleId,
+          });
+        },
+        (err: any) => {
+          assert.ok(err instanceof AppError);
+          assert.strictEqual(err.statusCode, 403);
+          assert.strictEqual(err.code, ERROR_CODE.FORBIDDEN);
+          return true;
+        },
+      );
+    });
+
+    it("should allow an ADMIN to create an ADMIN account", async () => {
+      const created = await userService.create(
+        {
+          email: "legitadmin@example.com",
+          password: "Password123!",
+          fullName: "Legit Admin",
+          roleId: adminRoleId,
+        },
+        adminUser.id,
+      );
+
+      assert.ok(created);
+      assert.strictEqual(created.email, "legitadmin@example.com");
+      assert.strictEqual(created.roleId, adminRoleId);
+    });
+
+    it("should allow a non-admin to create a regular USER account", async () => {
+      const created = await userService.create(
+        {
+          email: "regularnew@example.com",
+          password: "Password123!",
+          fullName: "Regular New",
+          roleId: userRoleId,
+        },
+        regularUser.id,
+      );
+
+      assert.ok(created);
+      assert.strictEqual(created.email, "regularnew@example.com");
+      assert.strictEqual(created.roleId, userRoleId);
+    });
+
+    it("should reject creation if role does not exist", async () => {
+      await assert.rejects(
+        async () => {
+          await userService.create(
+            {
+              email: "norole@example.com",
+              password: "Password123!",
+              fullName: "No Role",
+              roleId: "non-existent-role-id",
+            },
+            adminUser.id,
+          );
+        },
+        (err: any) => {
+          assert.ok(err instanceof AppError);
+          assert.strictEqual(err.statusCode, 404);
+          assert.strictEqual(err.code, ERROR_CODE.NOT_FOUND);
+          return true;
+        },
+      );
     });
   });
 });
