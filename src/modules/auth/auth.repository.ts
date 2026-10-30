@@ -610,40 +610,24 @@ export class AuthRepository {
     });
   }
 
+  /**
+   * Đếm số lượng người dùng đang hoạt động có vai trò Quản trị viên hệ thống (mặc định ROLES.ADMIN).
+   * Khắc phục SEC-06: Chỉ đếm tài khoản mang vai trò Admin thực tế, không tính gộp các vai trò
+   * ủy quyền (Operator) để đảm bảo hàng rào Anti-lockout bảo vệ Admin duy nhất không bị vượt qua.
+   */
   async countActiveAdmins(roleName: string = ROLES.ADMIN): Promise<number> {
-    // 1. Tìm các role IDs có tư cách Admin (theo tên hoặc theo quyền gán role/permission)
-    const adminRoles = await prisma.role.findMany({
-      where: {
-        OR: [
-          { name: roleName },
-          {
-            permissions: {
-              some: {
-                permission: {
-                  name: {
-                    in: [
-                      PERMISSIONS.USER_ROLE_ASSIGN,
-                      PERMISSIONS.ROLE_PERMISSION_ASSIGN,
-                    ],
-                  },
-                },
-              },
-            },
-          },
-        ],
-      },
+    const adminRole = await prisma.role.findUnique({
+      where: { name: roleName },
       select: { id: true },
     });
 
-    const adminRoleIds = adminRoles.map((r) => r.id);
-    if (adminRoleIds.length === 0) {
+    if (!adminRole) {
       return 0;
     }
 
-    // 2. Tận dụng composite index @@index([roleId, isActive, deletedAt]) trên bảng User
     return prisma.user.count({
       where: {
-        roleId: { in: adminRoleIds },
+        roleId: adminRole.id,
         isActive: true,
         deletedAt: null,
       },

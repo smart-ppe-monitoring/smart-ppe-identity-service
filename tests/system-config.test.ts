@@ -8,6 +8,11 @@ import {
 import { SystemConfigService } from "../src/modules/system-config/system-config.service";
 import { SystemConfigRepository } from "../src/modules/system-config/system-config.repository";
 import { requireFeatureFlag } from "../src/middlewares/feature-flag.middleware";
+import { maintenanceGuard } from "../src/middlewares/maintenance.middleware";
+import { maintenanceCacheService } from "../src/common/services/maintenance-cache.service";
+import { permissionCacheService } from "../src/common/services/permission-cache.service";
+import { MAINTENANCE_STATUS } from "../src/common/constants/maintenance.constant";
+import { jwtKeyService } from "../src/common/services/jwt-key.service";
 import { AppError } from "../src/common/errors/app-error";
 import { ERROR_CODE } from "../src/common/errors/error-code";
 
@@ -191,5 +196,162 @@ describe("Feature Flag Route Enforcement Middleware", () => {
 
     const isEnabled = await service.isFeatureEnabled("feature.ai_chat");
     assert.equal(isEnabled, false);
+  });
+});
+
+describe("Maintenance Guard Security (SEC-11)", () => {
+  const guard = maintenanceGuard();
+
+  beforeEach(() => {
+    permissionCacheService.clear();
+    // Enable maintenance mode
+    (maintenanceCacheService as any).cache = {
+      config: {
+        enabled: true,
+        status: MAINTENANCE_STATUS.DOWN,
+        title: "Maintenance",
+        message: "Under maintenance",
+        bypassRoles: ["ADMIN"],
+        bypassPermissions: ["MAINTENANCE_MANAGE"],
+        bypassIps: [],
+      },
+      expiresAt: Date.now() + 60000,
+    };
+  });
+
+  it("should NOT allow purged user (null userState) to bypass maintenance even with ADMIN role in token (SEC-11)", async () => {
+    (permissionCacheService as any).userCache.set("purged-admin-uuid", {
+      user: null,
+      expiresAt: Date.now() + 60000,
+    });
+
+    const adminToken = jwtKeyService.signAccessToken({
+      id: "purged-admin-uuid",
+      email: "purged@ppe.local",
+      role: "ADMIN",
+      roleId: "some-role-id",
+    });
+
+    const req: any = {
+      method: "POST",
+      url: "/api/v1/sites",
+      headers: { authorization: `Bearer ${adminToken}` },
+      socket: { remoteAddress: "1.2.3.4" },
+    };
+    const res: any = {
+      status: (code: number) => ({
+        json: (data: any) => ({ code, data }),
+      }),
+    };
+
+    let nextCalled = false;
+    let thrownError: any;
+
+    await guard(req, res, (err?: any) => {
+      if (err) {
+        thrownError = err;
+      } else {
+        nextCalled = true;
+      }
+    });
+
+    assert.strictEqual(nextCalled, false);
+    assert.ok(thrownError instanceof AppError);
+    assert.strictEqual(thrownError.statusCode, 503);
+    assert.strictEqual(thrownError.code, ERROR_CODE.SYSTEM_MAINTENANCE);
+  });
+
+  it("should NOT allow inactive or soft-deleted user to bypass maintenance mode", async () => {
+    const token = jwtKeyService.signAccessToken({
+      id: "inactive-admin-uuid",
+      email: "inactive@ppe.local",
+      role: "ADMIN",
+    });
+
+    (permissionCacheService as any).userCache.set("inactive-admin-uuid", {
+      user: {
+        id: "inactive-admin-uuid",
+        isActive: false,
+        deletedAt: null,
+        roleName: "ADMIN",
+      },
+      expiresAt: Date.now() + 60000,
+    });
+
+    const req: any = {
+      method: "GET",
+      url: "/api/v1/cameras",
+      headers: { authorization: `Bearer ${token}` },
+      socket: { remoteAddress: "1.2.3.4" },
+    };
+    let nextCalled = false;
+    let thrownError: any;
+
+    await guard(req, {} as any, (err?: any) => {
+      if (err) {
+        thrownError = err;
+      } else {
+        nextCalled = true;
+      }
+    });
+
+    assert.strictEqual(nextCalled, false);
+    assert.ok(thrownError instanceof AppError);
+    assert.strictEqual(thrownError.statusCode, 503);
+  });
+
+  it("should allow active ADMIN user with existing DB record to bypass maintenance mode", async () => {
+    const token = jwtKeyService.signAccessToken({
+      id: "active-admin-uuid",
+      email: "active@ppe.local",
+      role: "ADMIN",
+    });
+
+    (permissionCacheService as any).userCache.set("active-admin-uuid", {
+      user: {
+        id: "active-admin-uuid",
+        isActive: true,
+        deletedAt: null,
+        roleName: "ADMIN",
+      },
+      expiresAt: Date.now() + 60000,
+    });
+
+    const req: any = {
+      method: "POST",
+      url: "/api/v1/sites",
+      headers: { authorization: `Bearer ${token}` },
+      socket: { remoteAddress: "1.2.3.4" },
+    };
+    let nextCalled = false;
+
+    await guard(req, {} as any, () => {
+      nextCalled = true;
+    });
+
+    assert.strictEqual(nextCalled, true);
+  });
+});
+
+describe("Database Seed Security Hardening (SEC-12)", () => {
+  it("should have removed password overwrite and forced activation from prisma/seed.ts user upsert", async () => {
+    const fs = await import("node:fs");
+    const path = await import("node:path");
+    const seedContent = fs.readFileSync(
+      path.resolve(__dirname, "../prisma/seed.ts"),
+      "utf-8",
+    );
+
+    // Verify Production guard
+    assert.ok(
+      seedContent.includes('process.env.NODE_ENV === "production"'),
+      "seed.ts must guard against execution in production",
+    );
+
+    // Verify user update clause does not overwrite password
+    assert.ok(
+      !/update:\s*\{[^}]*password:\s*u\.password/s.test(seedContent),
+      "seed.ts user upsert update clause must not overwrite password with default password",
+    );
   });
 });

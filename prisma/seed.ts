@@ -417,6 +417,14 @@ const MANAGER_PERMISSIONS: string[] = [
 ];
 
 async function main() {
+  // SEC-12 Fix: Chặn thực thi seed trên môi trường Production để bảo vệ dữ liệu và thông tin xác thực
+  if (process.env.NODE_ENV === "production" && !process.env.FORCE_SEED) {
+    console.warn(
+      "[SECURITY ALERT] Seeding is strictly disabled in production to protect credentials and system state. Exiting safely.",
+    );
+    return;
+  }
+
   console.log("Starting Dynamic RBAC Seeding...");
 
   // 1. Seed Permissions
@@ -559,10 +567,10 @@ async function main() {
     await prisma.user.upsert({
       where: { email: u.email },
       update: {
-        password: u.password,
         fullName: u.fullName,
         roleId: roleMap[u.role],
-        isActive: true,
+        // SEC-12 Fix: Tuyệt đối KHÔNG ghi đè password hoặc isActive nếu tài khoản đã tồn tại
+        // Tránh reset mật khẩu quản trị viên về mặc định (Admin@123456) hoặc tự ý kích hoạt lại tài khoản đã bị khóa
       },
       create: {
         email: u.email,

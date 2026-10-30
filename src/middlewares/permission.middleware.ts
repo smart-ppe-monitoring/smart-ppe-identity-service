@@ -10,37 +10,76 @@ async function resolveUserPermissions(req: Request): Promise<Set<string>> {
     throw new AppError("Unauthorized", 401, ERROR_CODE.UNAUTHORIZED);
   }
 
+  // 1. SEC-07 Fix: API Key Authorization Scoping
+  // Nếu request được xác thực bằng API Key, tập quyền BẮT BUỘC bị giới hạn trong apiKey.permissions.
+  // Tuyệt đối KHÔNG áp dụng cơ chế Admin Bypass cho API Key, đảm bảo nguyên tắc đặc quyền tối thiểu (Least Privilege).
+  if (req.apiKey) {
+    const keyPermsList = Array.isArray(req.apiKey.permissions)
+      ? req.apiKey.permissions
+      : Array.isArray(req.user.permissions)
+        ? req.user.permissions
+        : [];
+    const apiKeyPermissions = new Set(keyPermsList);
+
+    // Nếu chủ sở hữu không phải ADMIN, quyền của API Key cũng không được vượt quá quyền vai trò của chủ sở hữu
+    if (
+      req.user.role !== ROLES.ADMIN &&
+      req.user.role !== "ADMIN" &&
+      req.user.roleId
+    ) {
+      let rolePermissions: Set<string>;
+      try {
+        rolePermissions = await permissionCacheService.getRolePermissions(
+          req.user.roleId,
+        );
+      } catch {
+        rolePermissions = new Set();
+      }
+      const effectivePermissions = new Set<string>();
+      for (const perm of apiKeyPermissions) {
+        if (rolePermissions.has(perm)) {
+          effectivePermissions.add(perm);
+        }
+      }
+      req.user.permissions = Array.from(effectivePermissions);
+      return effectivePermissions;
+    }
+
+    req.user.permissions = Array.from(apiKeyPermissions);
+    return apiKeyPermissions;
+  }
+
   let roleId = req.user.roleId;
 
-  // 1. Xác thực trạng thái người dùng (cached 60s) để chống dùng JWT cũ khi bị khóa/hạ quyền
-  // Bỏ qua khi request đã được xác thực qua API Key (đã có cơ chế kiểm tra riêng)
-  if (!req.apiKey) {
-    try {
-      const currentUser = await permissionCacheService.getUserState(req.user.id);
-      // Từ chối khi tài khoản không tồn tại, đã bị khóa hoặc xóa mềm
-      if (currentUser !== undefined && (currentUser === null || !currentUser.isActive || currentUser.deletedAt)) {
-        throw new AppError(
-          "Tài khoản của bạn đã bị vô hiệu hóa hoặc không tồn tại",
-          401,
-          ERROR_CODE.UNAUTHORIZED,
-        );
-      }
-      if (currentUser?.roleId) {
-        roleId = currentUser.roleId;
-        req.user.roleId = roleId;
-      }
-      if (currentUser?.roleName) {
-        req.user.role = currentUser.roleName;
-      }
-    } catch (err) {
-      if (err instanceof AppError) throw err;
-      // Resilient Fallback: Nếu không kết nối được Identity DB, dùng roleId từ JWT đã verify
+  // 2. Xác thực trạng thái người dùng (cached 60s) để chống dùng JWT cũ khi bị khóa/hạ quyền
+  try {
+    const currentUser = await permissionCacheService.getUserState(req.user.id);
+    // Từ chối khi tài khoản không tồn tại, đã bị khóa hoặc xóa mềm
+    if (
+      currentUser !== undefined &&
+      (currentUser === null || !currentUser.isActive || currentUser.deletedAt)
+    ) {
+      throw new AppError(
+        "Tài khoản của bạn đã bị vô hiệu hóa hoặc không tồn tại",
+        401,
+        ERROR_CODE.UNAUTHORIZED,
+      );
     }
+    if (currentUser?.roleId) {
+      roleId = currentUser.roleId;
+      req.user.roleId = roleId;
+    }
+    if (currentUser?.roleName) {
+      req.user.role = currentUser.roleName;
+    }
+  } catch (err) {
+    if (err instanceof AppError) throw err;
+    // Resilient Fallback: Nếu không kết nối được Identity DB, dùng roleId từ JWT đã verify
   }
 
   let userPermissions = new Set<string>();
 
-  // 2. Admin Bypass: ADMIN có toàn bộ quyền trong hệ thống (chỉ bypass sau khi đã xác thực trạng thái tài khoản)
+  // 3. Admin Bypass: Chỉ áp dụng cho tài khoản ADMIN tương tác trực tiếp (qua Access Token JWT)
   if (req.user.role === ROLES.ADMIN || req.user.role === "ADMIN") {
     userPermissions = new Set(Object.values(PERMISSIONS));
   } else {
@@ -56,27 +95,44 @@ async function resolveUserPermissions(req: Request): Promise<Set<string>> {
       userPermissions = await permissionCacheService.getRolePermissions(roleId);
     } catch {
       // Resilient Fallback theo Role khi mất kết nối Identity DB
-      if (req.user.role === ROLES.SAFETY_MANAGER || req.user.role === "SAFETY_MANAGER") {
+      if (
+        req.user.role === ROLES.SAFETY_MANAGER ||
+        req.user.role === "SAFETY_MANAGER"
+      ) {
         userPermissions = new Set([
-          PERMISSIONS.PPE_SITE_READ, PERMISSIONS.PPE_SITE_MANAGE,
-          PERMISSIONS.PPE_ZONE_READ, PERMISSIONS.PPE_ZONE_MANAGE,
-          PERMISSIONS.PPE_CAMERA_READ, PERMISSIONS.PPE_CAMERA_MANAGE,
-          PERMISSIONS.PPE_SAFETY_CONFIG_READ, PERMISSIONS.PPE_SAFETY_CONFIG_MANAGE,
-          PERMISSIONS.PPE_INCIDENT_READ, PERMISSIONS.PPE_INCIDENT_MANAGE,
-          PERMISSIONS.PPE_REPORTING_READ, PERMISSIONS.PPE_REPORTING_EXPORT,
-          PERMISSIONS.NOTIFICATION_READ, PERMISSIONS.NOTIFICATION_CREATE,
-          PERMISSIONS.FILE_READ, PERMISSIONS.FILE_UPLOAD, PERMISSIONS.FILE_MANAGE,
+          PERMISSIONS.PPE_SITE_READ,
+          PERMISSIONS.PPE_SITE_MANAGE,
+          PERMISSIONS.PPE_ZONE_READ,
+          PERMISSIONS.PPE_ZONE_MANAGE,
+          PERMISSIONS.PPE_CAMERA_READ,
+          PERMISSIONS.PPE_CAMERA_MANAGE,
+          PERMISSIONS.PPE_SAFETY_CONFIG_READ,
+          PERMISSIONS.PPE_SAFETY_CONFIG_MANAGE,
+          PERMISSIONS.PPE_INCIDENT_READ,
+          PERMISSIONS.PPE_INCIDENT_MANAGE,
+          PERMISSIONS.PPE_REPORTING_READ,
+          PERMISSIONS.PPE_REPORTING_EXPORT,
+          PERMISSIONS.NOTIFICATION_READ,
+          PERMISSIONS.NOTIFICATION_CREATE,
+          PERMISSIONS.FILE_READ,
+          PERMISSIONS.FILE_UPLOAD,
+          PERMISSIONS.FILE_MANAGE,
         ]);
-      } else if (req.user.role === ROLES.SAFETY_OFFICER || req.user.role === "SAFETY_OFFICER") {
+      } else if (
+        req.user.role === ROLES.SAFETY_OFFICER ||
+        req.user.role === "SAFETY_OFFICER"
+      ) {
         userPermissions = new Set([
           PERMISSIONS.PPE_SITE_READ,
           PERMISSIONS.PPE_ZONE_READ,
           PERMISSIONS.PPE_CAMERA_READ,
           PERMISSIONS.PPE_SAFETY_CONFIG_READ,
-          PERMISSIONS.PPE_INCIDENT_READ, PERMISSIONS.PPE_INCIDENT_MANAGE,
+          PERMISSIONS.PPE_INCIDENT_READ,
+          PERMISSIONS.PPE_INCIDENT_MANAGE,
           PERMISSIONS.PPE_REPORTING_READ,
           PERMISSIONS.NOTIFICATION_READ,
-          PERMISSIONS.FILE_READ, PERMISSIONS.FILE_UPLOAD,
+          PERMISSIONS.FILE_READ,
+          PERMISSIONS.FILE_UPLOAD,
         ]);
       } else {
         userPermissions = new Set([
@@ -85,24 +141,6 @@ async function resolveUserPermissions(req: Request): Promise<Set<string>> {
         ]);
       }
     }
-  }
-
-  // If request is authenticated via API Key, intersect role permissions with scoped API Key permissions
-  if (req.apiKey) {
-    const keyPermsList = Array.isArray(req.apiKey.permissions)
-      ? req.apiKey.permissions
-      : Array.isArray(req.user.permissions)
-        ? req.user.permissions
-        : [];
-    const apiKeyPermissions = new Set(keyPermsList);
-    const effectivePermissions = new Set<string>();
-    for (const perm of userPermissions) {
-      if (apiKeyPermissions.has(perm)) {
-        effectivePermissions.add(perm);
-      }
-    }
-    req.user.permissions = Array.from(effectivePermissions);
-    return effectivePermissions;
   }
 
   req.user.permissions = Array.from(userPermissions);

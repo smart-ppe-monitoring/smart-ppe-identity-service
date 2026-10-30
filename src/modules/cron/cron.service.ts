@@ -117,6 +117,15 @@ export class CronService {
     retentionDays: number;
     cutoffDate: string;
   }> {
+    // SEC-18: Kiểm tra cận dưới tối thiểu 30 ngày (Defense-in-depth)
+    if (!Number.isFinite(retentionDays) || retentionDays < 30) {
+      throw new AppError(
+        "Thời gian lưu trữ Audit Log tối thiểu phải từ 30 ngày để đảm bảo an toàn bằng chứng kiểm toán",
+        400,
+        ERROR_CODE.VALIDATION_ERROR,
+      );
+    }
+
     const cutoffDate = new Date(
       Date.now() - retentionDays * 24 * 60 * 60 * 1000,
     );

@@ -256,7 +256,7 @@ export class JwtKeyService {
   }
 
   /**
-   * Xác thực Access Token linh hoạt (hỗ trợ cả RS256 và HS256)
+   * Xác thực Access Token linh hoạt theo thuật toán được cấu hình (mặc định ghim chặt RS256)
    */
   public verifyAccessToken<T = unknown>(
     token: string,
@@ -269,14 +269,32 @@ export class JwtKeyService {
 
     const alg = decoded.header.alg;
 
-    if (alg === JWT_ALGORITHM.RS256) {
+    // Pinning: Nếu hệ thống cấu hình RS256, từ chối mọi token không phải RS256 (chống Algorithm Confusion)
+    if (this.algorithm === JWT_ALGORITHM.RS256) {
+      if (alg !== JWT_ALGORITHM.RS256) {
+        throw new AppError(
+          `Thuật toán ký token '${alg}' không được hỗ trợ. Hệ thống yêu cầu ${JWT_ALGORITHM.RS256}`,
+          401,
+          ERROR_CODE.TOKEN_INVALID,
+        );
+      }
+
       return jwt.verify(token, this.publicKeyPem, {
         algorithms: [JWT_ALGORITHM.RS256],
         ...options,
       }) as T;
     }
 
-    if (alg === JWT_ALGORITHM.HS256) {
+    // Chỉ cho phép HS256 nếu hệ thống được chỉ định rõ ràng cấu hình hoạt động ở chế độ HS256
+    if (this.algorithm === JWT_ALGORITHM.HS256) {
+      if (alg !== JWT_ALGORITHM.HS256) {
+        throw new AppError(
+          `Thuật toán ký token '${alg}' không được hỗ trợ. Hệ thống yêu cầu ${JWT_ALGORITHM.HS256}`,
+          401,
+          ERROR_CODE.TOKEN_INVALID,
+        );
+      }
+
       return jwt.verify(token, jwtConfig.accessSecret, {
         algorithms: [JWT_ALGORITHM.HS256],
         ...options,

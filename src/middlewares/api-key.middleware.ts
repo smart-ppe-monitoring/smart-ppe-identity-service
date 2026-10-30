@@ -93,19 +93,34 @@ export async function apiKeyAuthMiddleware(
       integrationRepository.updateApiKeyLastUsed(apiKey.id).catch(() => {});
     }
 
+    // Trích xuất an toàn mảng quyền được cấp cho API Key
+    const parsedPermissions: string[] = Array.isArray(apiKey.permissions)
+      ? (apiKey.permissions as string[])
+      : typeof apiKey.permissions === "string"
+        ? (() => {
+            try {
+              const parsed = JSON.parse(apiKey.permissions);
+              return Array.isArray(parsed) ? parsed : [];
+            } catch {
+              return [];
+            }
+          })()
+        : [];
+
     // Gán thông tin user sở hữu API Key vào request
     req.user = {
       id: apiKey.user.id,
       email: apiKey.user.email || "",
       role: apiKey.user.role.name,
       roleId: apiKey.user.roleId,
-      permissions: (apiKey.permissions as string[]) || [],
+      permissions: parsedPermissions,
     };
 
     req.apiKey = {
       id: apiKey.id,
       name: apiKey.name,
       prefix: apiKey.prefix,
+      permissions: parsedPermissions,
     };
 
     next();

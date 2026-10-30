@@ -4,3 +4,7 @@ dist
 .env.*
 *.log
 .git
+keys
+keys/
+*.pem
+*.key

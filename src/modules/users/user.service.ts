@@ -23,14 +23,22 @@ import {
   EventBusService,
 } from "../../common/services/event-bus.service";
 import { EVENT_NAMES } from "../../common/constants/event.constant";
+import { R2Service } from "../../common/services/r2.service";
+import { envConfig } from "../../config/env.config";
 
 export class UserService {
   private readonly repository: UserRepository;
   private readonly eventBus: EventBusService;
+  private readonly r2Service: R2Service;
 
-  constructor(repository?: UserRepository, eventBusService?: EventBusService) {
+  constructor(
+    repository?: UserRepository,
+    eventBusService?: EventBusService,
+    r2Service?: R2Service,
+  ) {
     this.repository = repository || new UserRepository();
     this.eventBus = eventBusService || eventBus;
+    this.r2Service = r2Service || new R2Service();
   }
 
   /**
@@ -40,9 +48,11 @@ export class UserService {
    */
   async isAdministrativeUser(user: {
     roleId?: string | null;
-    role?: { name: string } | null;
+    role?: { name: string } | string | null;
   }): Promise<boolean> {
-    if (user.role?.name === ROLES.ADMIN) {
+    const roleName =
+      typeof user.role === "string" ? user.role : user.role?.name;
+    if (roleName === ROLES.ADMIN) {
       return true;
     }
     if (user.roleId) {
@@ -57,27 +67,78 @@ export class UserService {
     return false;
   }
 
-  async findAll(query: UserQueryDto) {
+  async findAll(
+    query: UserQueryDto,
+    currentUser?: {
+      roleId?: string | null;
+      role?: { name: string } | string | null;
+    },
+  ) {
+    let result: { data: any[]; meta: any };
     if (
       query.search?.trim() &&
       typeof this.repository.searchFts === "function"
     ) {
-      return this.repository.searchFts(query);
+      result = await this.repository.searchFts(query);
+    } else {
+      result = await this.repository.findAll(query);
     }
-    return this.repository.findAll(query);
+
+    // SEC-23: Lọc bỏ metadata nhạy cảm (failedLoginAttempts, lockedUntil, mustChangePassword)
+    // đối với người dùng không phải Quản trị viên (non-admin) để ngăn chặn User Enumeration và tấn công Brute-force
+    const isAdmin = currentUser
+      ? await this.isAdministrativeUser(currentUser)
+      : false;
+
+    if (!isAdmin && Array.isArray(result.data)) {
+      result = {
+        ...result,
+        data: result.data.map((u: any) => {
+          const {
+            failedLoginAttempts,
+            lockedUntil,
+            mustChangePassword,
+            ...safeUser
+          } = u;
+          return safeUser;
+        }),
+      };
+    }
+
+    return result;
   }
 
-  async findById(id: string) {
+  async findById(
+    id: string,
+    currentUser?: {
+      roleId?: string | null;
+      role?: { name: string } | string | null;
+    },
+  ) {
     const user = await this.repository.findById(id);
 
     if (!user) {
       throw new AppError("User not found", 404, ERROR_CODE.NOT_FOUND);
     }
 
+    // SEC-23: Lọc bỏ metadata nhạy cảm nếu người gọi không phải Quản trị viên
+    if (currentUser) {
+      const isAdmin = await this.isAdministrativeUser(currentUser);
+      if (!isAdmin) {
+        const {
+          failedLoginAttempts,
+          lockedUntil,
+          mustChangePassword,
+          ...safeUser
+        } = user as any;
+        return safeUser;
+      }
+    }
+
     return user;
   }
 
-  async create(data: CreateUserDto) {
+  async create(data: CreateUserDto, actorId?: string) {
     const existing = await this.repository.findByEmail(data.email);
 
     if (existing) {
@@ -86,6 +147,39 @@ export class UserService {
         409,
         ERROR_CODE.DUPLICATE_ENTRY,
       );
+    }
+
+    let targetRole: { id: string; name: string } | null = null;
+    if (typeof (this.repository as any).findRoleById === "function") {
+      targetRole = await (this.repository as any).findRoleById(data.roleId);
+      if (!targetRole) {
+        throw new AppError("Vai trò không tồn tại", 404, ERROR_CODE.NOT_FOUND);
+      }
+    }
+
+    const isTargetAdmin = await this.isAdministrativeUser({
+      roleId: data.roleId,
+      role: targetRole,
+    });
+
+    // Vertical hierarchy check: Only administrative users can create other administrative users
+    if (isTargetAdmin) {
+      if (!actorId) {
+        throw new AppError(
+          "Bạn không có quyền khởi tạo tài khoản Quản trị viên (Admin)",
+          403,
+          ERROR_CODE.FORBIDDEN,
+        );
+      }
+      const actor = await this.findById(actorId);
+      const isActorAdmin = await this.isAdministrativeUser(actor);
+      if (!isActorAdmin) {
+        throw new AppError(
+          "Bạn không có quyền khởi tạo tài khoản Quản trị viên (Admin)",
+          403,
+          ERROR_CODE.FORBIDDEN,
+        );
+      }
     }
 
     const passwordHash = await bcrypt.hash(data.password, 10);
@@ -121,9 +215,9 @@ export class UserService {
 
     // Anti-lockout guard: Ngăn chặn vô hiệu hóa Quản trị viên (Admin) duy nhất
     if (data.isActive === false && existing.isActive) {
-      if (isTargetAdmin) {
+      if (existing.role?.name === ROLES.ADMIN) {
         const activeAdminsCount = await this.repository.countActiveAdmins(
-          existing.role?.name,
+          ROLES.ADMIN,
         );
         if (activeAdminsCount <= 1) {
           throw new AppError(
@@ -198,9 +292,9 @@ export class UserService {
     }
 
     // Anti-lockout guard: Ngăn chặn xóa tài khoản Quản trị viên (Admin) duy nhất
-    if (userToDelete.isActive && isTargetAdmin) {
+    if (userToDelete.isActive && userToDelete.role?.name === ROLES.ADMIN) {
       const activeAdminsCount = await this.repository.countActiveAdmins(
-        userToDelete.role?.name,
+        ROLES.ADMIN,
       );
       if (activeAdminsCount <= 1) {
         throw new AppError(
@@ -211,8 +305,37 @@ export class UserService {
       }
     }
 
-    const result = await this.repository.softDelete(id, adminId);
+    // SEC-20: Tombstone pattern khi xóa mềm để giải phóng unique constraints (email, phone)
+    // chống tấn công Denial of Service khi người dùng tái đăng ký, đồng thời dọn dẹp file avatar trên R2.
+    const now = Date.now();
+    const tombstoneEmail = userToDelete.email
+      ? `deleted_${now}_${id}@tombstone.local`
+      : undefined;
+
+    const result = await this.repository.softDelete(id, adminId, {
+      email: tombstoneEmail,
+      phoneNumber: null,
+    });
     permissionCacheService.invalidateUser(id);
+
+    // Dọn dẹp avatar R2 của người dùng bị xóa mềm
+    if (userToDelete.avatarUrl) {
+      try {
+        let key: string | null = null;
+        const base = envConfig.r2.publicBaseUrl.replace(/\/$/, "");
+        if (base && userToDelete.avatarUrl.startsWith(base)) {
+          key = userToDelete.avatarUrl.slice(base.length + 1);
+        } else if (userToDelete.avatarUrl.includes(`avatars/${id}/`)) {
+          const idx = userToDelete.avatarUrl.indexOf(`avatars/${id}/`);
+          key = userToDelete.avatarUrl.slice(idx);
+        }
+        if (key && key.startsWith(`avatars/${id}/`)) {
+          this.r2Service.deleteFile(key).catch(() => {});
+        }
+      } catch {
+        // Bỏ qua lỗi dọn dẹp storage ngoài luồng chính
+      }
+    }
 
     await this.repository.createAuditLog({
       actorId: adminId,

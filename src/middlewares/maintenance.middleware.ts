@@ -9,7 +9,7 @@ import {
   MAINTENANCE_STATUS,
   DEFAULT_MAINTENANCE_CONFIG,
 } from "../common/constants/maintenance.constant";
-import { isIpInWhitelist } from "../common/helpers/ip.helper";
+import { isIpInWhitelist, getClientIp } from "../common/helpers/ip.helper";
 import { extractTokenFromRequest } from "./auth.middleware";
 import { jwtKeyService } from "../common/services/jwt-key.service";
 
@@ -58,7 +58,8 @@ export function maintenanceGuard(options?: MaintenanceGuardOptions) {
       }
 
       // Check IP Whitelist Bypass (e.g. Developer VPN, QA office static IPs)
-      const clientIp = req.ip || req.socket?.remoteAddress || "";
+      // SEC-19: Lấy địa chỉ IP an toàn và chuẩn hóa chống giả mạo header X-Forwarded-For
+      const clientIp = getClientIp(req);
       const bypassIps = Array.isArray((config as any).bypassIps)
         ? ((config as any).bypassIps as string[])
         : [];
@@ -97,11 +98,21 @@ export function maintenanceGuard(options?: MaintenanceGuardOptions) {
 
       // If user is authenticated, check bypass permissions / roles
       if (user) {
-        // P2-08: Ensure user is still active before granting maintenance bypass
+        // SEC-11 Fix: Bắt buộc tài khoản người dùng phải tồn tại thực tế trong DB,
+        // đang hoạt động (isActive) và chưa bị xóa mềm/hard-delete (purged).
+        // Chống bypass bảo trì khi token Admin đã bị xóa sạch (purged) khỏi database.
         const userState = await permissionCacheService.getUserState(user.id);
-        if (userState && (!userState.isActive || userState.deletedAt)) {
+        if (!userState || !userState.isActive || userState.deletedAt) {
           user = undefined;
           delete (req as any).user;
+        } else {
+          // Đồng bộ lại vai trò và roleId thực tế từ DB (tránh dùng role cũ trong token)
+          if (userState.roleName) {
+            user.role = userState.roleName as any;
+          }
+          if (userState.roleId) {
+            user.roleId = userState.roleId;
+          }
         }
       }
 

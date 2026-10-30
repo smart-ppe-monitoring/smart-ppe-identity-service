@@ -3,7 +3,10 @@ import { isPublicHttpUrl } from "../../common/helpers/url.helper";
 
 export const loginSchema = z.object({
   email: z.string().min(1, "Email is required").email("Invalid email format"),
-  password: z.string().min(1, "Password is required"),
+  password: z
+    .string()
+    .min(1, "Password is required")
+    .max(128, "Password must not exceed 128 characters"),
 });
 
 export const refreshSchema = z.object({
@@ -23,6 +26,7 @@ export const registerSchema = z.object({
   password: z
     .string()
     .min(8, "Password must be at least 8 characters")
+    .max(128, "Password must not exceed 128 characters")
     .regex(/[a-z]/, "Password must contain at least one lowercase letter")
     .regex(/[A-Z]/, "Password must contain at least one uppercase letter")
     .regex(/[0-9]/, "Password must contain at least one number")
@@ -65,10 +69,14 @@ export const updateProfileSchema = z.object({
 });
 
 export const updatePasswordSchema = z.object({
-  oldPassword: z.string().optional(),
+  oldPassword: z
+    .string()
+    .max(128, "Password must not exceed 128 characters")
+    .optional(),
   newPassword: z
     .string()
     .min(8, "Password must be at least 8 characters")
+    .max(128, "Password must not exceed 128 characters")
     .regex(/[a-z]/, "Password must contain at least one lowercase letter")
     .regex(/[A-Z]/, "Password must contain at least one uppercase letter")
     .regex(/[0-9]/, "Password must contain at least one number")
@@ -88,6 +96,7 @@ export const resetPasswordSchema = z.object({
   newPassword: z
     .string()
     .min(8, "Password must be at least 8 characters")
+    .max(128, "Password must not exceed 128 characters")
     .regex(/[a-z]/, "Password must contain at least one lowercase letter")
     .regex(/[A-Z]/, "Password must contain at least one uppercase letter")
     .regex(/[0-9]/, "Password must contain at least one number")
@@ -121,7 +130,8 @@ export const confirmAvatarUploadSchema = z.object({
 export const requestDeactivateSchema = z.object({
   password: z
     .string()
-    .min(1, "Mật khẩu hiện tại là bắt buộc để xác nhận yêu cầu"),
+    .min(1, "Mật khẩu hiện tại là bắt buộc để xác nhận yêu cầu")
+    .max(128, "Password must not exceed 128 characters"),
   reason: z.string().max(500, "Lý do tối đa 500 ký tự").optional(),
 });
 
@@ -152,6 +162,7 @@ export const disable2FASchema = z.object({
   password: z
     .string()
     .min(1, "Mật khẩu hiện tại là bắt buộc để tắt 2FA")
+    .max(128, "Password must not exceed 128 characters")
     .optional(),
   code: z.string().min(6, "Mã TOTP hoặc mã dự phòng là bắt buộc").max(20),
 });
@@ -160,6 +171,7 @@ export const regenerateBackupCodesSchema = z.object({
   password: z
     .string()
     .min(1, "Mật khẩu hiện tại là bắt buộc để tái tạo mã dự phòng")
+    .max(128, "Password must not exceed 128 characters")
     .optional(),
   code: z
     .string()

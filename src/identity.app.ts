@@ -13,7 +13,10 @@ import securityTxtRoute from "./modules/security-txt/security-txt.route";
 import { jwksRoute } from "./modules/jwks/jwks.route";
 import { swaggerSpec, swaggerOptions } from "./config/swagger.config";
 import { rateLimitMiddleware } from "./middlewares/rate-limit.middleware";
-import { requestIdMiddleware } from "./middlewares/request-id.middleware";
+import {
+  requestIdMiddleware,
+  requireGatewayOrigin,
+} from "./middlewares/request-id.middleware";
 import { envConfig } from "./config/env.config";
 
 const app = express();
@@ -85,7 +88,7 @@ if (envConfig.nodeEnv !== "production") {
 
 app.use(securityTxtRoute);
 app.use(rateLimitMiddleware, jwksRoute);
-app.use("/api/v1", rateLimitMiddleware, routes);
+app.use("/api/v1", requireGatewayOrigin, rateLimitMiddleware, routes);
 
 app.use(notFoundMiddleware);
 app.use(errorMiddleware);

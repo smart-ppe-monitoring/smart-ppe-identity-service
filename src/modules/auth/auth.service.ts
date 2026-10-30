@@ -192,6 +192,16 @@ export class AuthService {
     metadata?: { userAgent?: string; ipAddress?: string },
   ): Promise<LoginResponseDto> {
     const { email, password } = data;
+
+    // SEC-22: Giới hạn độ dài mật khẩu để chống Event Loop Starvation trong bcryptjs (CWE-400)
+    if (password && password.length > 128) {
+      throw new AppError(
+        "Password must not exceed 128 characters",
+        400,
+        ERROR_CODE.VALIDATION_ERROR,
+      );
+    }
+
     const user = await this.repository.findByEmail(email);
 
     if (!user) {
@@ -282,12 +292,14 @@ export class AuthService {
       }
     }
 
+    // SEC-16: Đưa cờ mustChangePassword vào JWT Access Token để áp đặt đổi mật khẩu
     const payload = {
       id: user.id,
       email: user.email,
       role: user.role.name,
       roleId: user.roleId,
       permissions: userPermissions,
+      mustChangePassword: user.mustChangePassword ?? false,
       purpose: JWT_PURPOSE.ACCESS,
     };
 
@@ -431,20 +443,13 @@ export class AuthService {
 
     if (user) {
       // Tài khoản đã liên kết
-      if (user.deletedAt) {
+      // SEC-14: Ngăn tài khoản đã bị vô hiệu hóa/khóa bởi Admin tự động kích hoạt lại qua Google OAuth
+      if (user.deletedAt || !user.isActive) {
         throw new AppError(
           "Tài khoản đã bị vô hiệu hóa hoặc xóa.",
           403,
           ERROR_CODE.USER_INACTIVE,
         );
-      }
-      if (!user.isActive) {
-        // Tự động kích hoạt tài khoản vì Google đã xác minh email thành công
-        await this.repository.activateUser(user.id);
-        const refreshedUser = await this.repository.findById(user.id);
-        if (refreshedUser) {
-          user = refreshedUser;
-        }
       }
     } else {
       // 2. Nếu chưa liên kết qua UserSocial, kiểm tra theo email
@@ -809,11 +814,28 @@ export class AuthService {
       );
     }
 
+    let userPermissions: string[] = [];
+    try {
+      if (user.role.name === "ADMIN") {
+        userPermissions = Object.values(PERMISSIONS);
+      } else if (user.roleId) {
+        const permsSet = await permissionCacheService.getRolePermissions(user.roleId);
+        userPermissions = Array.from(permsSet);
+      }
+    } catch {
+      if (user.role.name === "ADMIN") {
+        userPermissions = Object.values(PERMISSIONS);
+      }
+    }
+
+    // SEC-15 & SEC-16: Bổ sung permissions và mustChangePassword vào Access Token khi refresh
     const newPayload = {
       id: user.id,
       email: user.email,
       role: user.role.name,
       roleId: user.roleId,
+      permissions: userPermissions,
+      mustChangePassword: user.mustChangePassword ?? false,
       purpose: JWT_PURPOSE.ACCESS,
     };
 
@@ -897,6 +919,15 @@ export class AuthService {
 
   async register(data: RegisterDto): Promise<void> {
     const { email, password, fullName } = data;
+
+    // SEC-22: Giới hạn độ dài mật khẩu để chống Event Loop Starvation trong bcryptjs (CWE-400)
+    if (password && password.length > 128) {
+      throw new AppError(
+        "Password must not exceed 128 characters",
+        400,
+        ERROR_CODE.VALIDATION_ERROR,
+      );
+    }
 
     const existing = await this.repository.findByEmail(email);
     if (existing) {
@@ -1010,6 +1041,24 @@ export class AuthService {
       }
     }
 
+    // SEC-09 Fix: Nếu người dùng cập nhật avatarUrl trỏ tới R2 bucket của hệ thống,
+    // bắt buộc URL phải trỏ tới thư mục của chính user (avatars/${userId}/).
+    // Tuyệt đối không cho phép gán avatarUrl trỏ tới tệp của người dùng khác.
+    if (data.avatarUrl) {
+      const base = r2Config.publicBaseUrl.replace(/\/$/, "");
+      if (data.avatarUrl.startsWith(base)) {
+        const key = data.avatarUrl.slice(base.length + 1);
+        const expectedPrefix = `avatars/${userId}/`;
+        if (!key.startsWith(expectedPrefix)) {
+          throw new AppError(
+            "Đường dẫn ảnh đại diện không hợp lệ (không thuộc sở hữu của tài khoản)",
+            403,
+            ERROR_CODE.FORBIDDEN,
+          );
+        }
+      }
+    }
+
     await this.repository.updateProfile(userId, data);
 
     notificationDispatcher
@@ -1025,6 +1074,18 @@ export class AuthService {
   }
 
   async updatePassword(userId: string, data: UpdatePasswordDto): Promise<void> {
+    // SEC-22: Giới hạn độ dài mật khẩu để chống Event Loop Starvation trong bcryptjs (CWE-400)
+    if (
+      (data.newPassword && data.newPassword.length > 128) ||
+      (data.oldPassword && data.oldPassword.length > 128)
+    ) {
+      throw new AppError(
+        "Password must not exceed 128 characters",
+        400,
+        ERROR_CODE.VALIDATION_ERROR,
+      );
+    }
+
     const user = await this.repository.findById(userId);
     if (!user) {
       throw new AppError("User not found", 404, ERROR_CODE.NOT_FOUND);
@@ -1060,6 +1121,7 @@ export class AuthService {
 
     const passwordHash = await bcrypt.hash(data.newPassword, 10);
     await this.repository.updatePasswordAndRevokeTokens(userId, passwordHash);
+    permissionCacheService.invalidateUser(userId);
 
     notificationDispatcher
       .notify(
@@ -1377,8 +1439,9 @@ export class AuthService {
         console.error("Failed to dispatch avatar notification:", err),
       );
 
-    // Xóa file cũ (thực hiện sau khi DB đã cập nhật thành công)
-    if (oldKey && oldKey !== data.key) {
+    // SEC-09 Fix: Chỉ xóa file cũ nếu file cũ thực sự thuộc về chính user này (khớp tiền tố avatars/${userId}/)
+    // Chống IDOR Storage Deletion thông qua việc đầu độc user.avatarUrl trỏ tới file của người dùng khác trên R2
+    if (oldKey && oldKey !== data.key && oldKey.startsWith(expectedPrefix)) {
       await this.r2Service.deleteFile(oldKey).catch(() => {
         // Không throw nếu xóa file cũ thất bại — không ảnh hưởng đến flow chính
       });

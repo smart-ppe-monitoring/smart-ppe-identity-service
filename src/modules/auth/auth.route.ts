@@ -3,6 +3,8 @@ import { AuthController } from "./auth.controller";
 import { authMiddleware } from "../../middlewares/auth.middleware";
 import { authRateLimitMiddleware } from "../../middlewares/rate-limit.middleware";
 import { turnstileGuard } from "../../middlewares/turnstile.middleware";
+import { requireFeatureFlag } from "../../middlewares/feature-flag.middleware";
+import { FEATURE_FLAGS } from "../../common/constants/system-config.constant";
 import { TURNSTILE_ACTION } from "../../common/constants/turnstile.constant";
 import { validate } from "../../middlewares/validate.middleware";
 import {
@@ -38,6 +40,10 @@ const controller = new AuthController();
 router.post(
   "/register",
   authRateLimitMiddleware,
+  // SEC-21: Gắn middleware kiểm tra trạng thái cờ bật/tắt đăng ký người dùng
+  requireFeatureFlag(FEATURE_FLAGS.REGISTRATION_ENABLED, {
+    message: "Tính năng đăng ký tài khoản hiện đang tạm khóa bởi quản trị viên",
+  }),
   turnstileGuard({ action: TURNSTILE_ACTION.REGISTER }),
   validate(registerSchema),
   controller.register,
@@ -195,6 +201,10 @@ router.get(
 router.post(
   "/google",
   authRateLimitMiddleware,
+  // SEC-21: Gắn middleware kiểm tra trạng thái cờ đăng nhập xã hội
+  requireFeatureFlag(FEATURE_FLAGS.SOCIAL_LOGIN_ENABLED, {
+    message: "Tính năng đăng nhập qua Google hiện đang tạm khóa bởi quản trị viên",
+  }),
   validate(googleLoginSchema),
   controller.googleLogin,
 );

@@ -59,6 +59,8 @@ interface AccessTokenClaims {
   email: string;
   role: string;
   roleId?: string;
+  permissions?: string[];
+  mustChangePassword?: boolean;
   purpose?: string;
   type?: string;
 }
@@ -250,8 +252,11 @@ export function createVerifyJwtLocally(options: VerifyJwtLocallyOptions = {}) {
 
       // 2. Chặn các thuật toán không an toàn hoặc không được phép (chống Algorithm Confusion)
       if (alg !== JWT_ALGORITHM.RS256) {
-        // Cho phép HS256 nếu có cấu hình tương thích ngược
-        if (alg === JWT_ALGORITHM.HS256) {
+        // Chỉ cho phép HS256 nếu hệ thống được cấu hình tường minh chạy ở chế độ HS256
+        if (
+          jwtKeyService.getAlgorithm() === JWT_ALGORITHM.HS256 &&
+          alg === JWT_ALGORITHM.HS256
+        ) {
           const payload = jwt.verify(token, jwtConfig.accessSecret, {
             algorithms: [JWT_ALGORITHM.HS256],
           }) as AccessTokenClaims;
@@ -333,6 +338,15 @@ export function createVerifyJwtLocally(options: VerifyJwtLocallyOptions = {}) {
           "Token không hợp lệ để truy cập tài nguyên được bảo vệ",
           401,
           ERROR_CODE.UNAUTHORIZED,
+        );
+      }
+
+      // 5.1 SEC-16: Chặn token có cờ mustChangePassword truy cập satellite services
+      if (payload.mustChangePassword) {
+        throw new AppError(
+          "Bạn bắt buộc phải đổi mật khẩu trước khi thực hiện các thao tác khác trên hệ thống",
+          403,
+          ERROR_CODE.FORBIDDEN,
         );
       }
 

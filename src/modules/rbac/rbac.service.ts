@@ -85,6 +85,42 @@ export class RbacService {
           ERROR_CODE.VALIDATION_ERROR,
         );
       }
+
+      if (context?.actorId) {
+        const actor = await this.findUserForRoleCheck(context.actorId);
+        const isActorAdmin = actor?.role?.name === ROLES.ADMIN;
+
+        if (!isActorAdmin) {
+          const actorPermissions = actor?.roleId
+            ? await permissionCacheService.getRolePermissions(actor.roleId)
+            : new Set<string>();
+
+          const unauthorizedPerms = validPermissions.filter(
+            (p) => !actorPermissions.has(p.name),
+          );
+
+          if (unauthorizedPerms.length > 0) {
+            throw new AppError(
+              "Bạn không thể gán các quyền vượt quá tập quyền hiện có của vai trò bạn đang sở hữu (Subset Validation)",
+              403,
+              ERROR_CODE.FORBIDDEN,
+            );
+          }
+
+          const hasDelegationPerm = validPermissions.some(
+            (p) =>
+              p.name === PERMISSIONS.ROLE_PERMISSION_ASSIGN ||
+              p.name === PERMISSIONS.USER_ROLE_ASSIGN,
+          );
+          if (hasDelegationPerm) {
+            throw new AppError(
+              "Chỉ Quản trị viên (Admin) mới có quyền cấp các đặc quyền quản trị vai trò và phân quyền",
+              403,
+              ERROR_CODE.FORBIDDEN,
+            );
+          }
+        }
+      }
     }
 
     const role = await this.repository.createRole(data);
@@ -212,19 +248,63 @@ export class RbacService {
       );
     }
 
-    // Anti-lockout protection: ADMIN role must retain ROLE_PERMISSION_ASSIGN
-    if (role.name === ROLES.ADMIN) {
-      if (context?.actorId) {
-        const actor = await this.findUserForRoleCheck(context.actorId);
-        if (actor?.role?.name !== ROLES.ADMIN) {
+    if (context?.actorId) {
+      const actor = await this.findUserForRoleCheck(context.actorId);
+      const isActorAdmin = actor?.role?.name === ROLES.ADMIN;
+
+      // 1. Anti-privilege escalation: Only ADMIN can modify permissions of the ADMIN role
+      if (role.name === ROLES.ADMIN && !isActorAdmin) {
+        throw new AppError(
+          "Chỉ Quản trị viên (Admin) mới có quyền chỉnh sửa quyền của vai trò Quản trị viên",
+          403,
+          ERROR_CODE.FORBIDDEN,
+        );
+      }
+
+      // 2. Anti-self-escalation: Non-admin actors cannot alter their own role's permissions
+      if (!isActorAdmin && actor?.roleId === roleId) {
+        throw new AppError(
+          "Không được phép tự gán hoặc thay đổi quyền cho vai trò của chính mình",
+          403,
+          ERROR_CODE.FORBIDDEN,
+        );
+      }
+
+      // 3. Subset validation: Non-admin actors can only assign permissions they already possess
+      if (!isActorAdmin) {
+        const actorPermissions = actor?.roleId
+          ? await permissionCacheService.getRolePermissions(actor.roleId)
+          : new Set<string>();
+
+        const unauthorizedPerms = validPermissions.filter(
+          (p) => !actorPermissions.has(p.name),
+        );
+
+        if (unauthorizedPerms.length > 0) {
           throw new AppError(
-            "Chỉ Quản trị viên (Admin) mới có quyền chỉnh sửa quyền của vai trò Quản trị viên",
+            "Bạn không thể gán các quyền vượt quá tập quyền hiện có của vai trò bạn đang sở hữu (Subset Validation)",
+            403,
+            ERROR_CODE.FORBIDDEN,
+          );
+        }
+
+        const hasDelegationPerm = validPermissions.some(
+          (p) =>
+            p.name === PERMISSIONS.ROLE_PERMISSION_ASSIGN ||
+            p.name === PERMISSIONS.USER_ROLE_ASSIGN,
+        );
+        if (hasDelegationPerm) {
+          throw new AppError(
+            "Chỉ Quản trị viên (Admin) mới có quyền cấp các đặc quyền quản trị vai trò và phân quyền",
             403,
             ERROR_CODE.FORBIDDEN,
           );
         }
       }
+    }
 
+    // Anti-lockout protection: ADMIN role must retain ROLE_PERMISSION_ASSIGN
+    if (role.name === ROLES.ADMIN) {
       const assignPermId = await this.getRolePermissionAssignId();
       if (assignPermId && !permissionIds.includes(assignPermId)) {
         throw new AppError(
@@ -262,19 +342,31 @@ export class RbacService {
   ) {
     const role = await this.findRoleById(roleId);
 
-    // Anti-lockout protection: ADMIN role must retain ROLE_PERMISSION_ASSIGN
-    if (role.name === ROLES.ADMIN) {
-      if (context?.actorId) {
-        const actor = await this.findUserForRoleCheck(context.actorId);
-        if (actor?.role?.name !== ROLES.ADMIN) {
-          throw new AppError(
-            "Chỉ Quản trị viên (Admin) mới có quyền chỉnh sửa quyền của vai trò Quản trị viên",
-            403,
-            ERROR_CODE.FORBIDDEN,
-          );
-        }
+    if (context?.actorId) {
+      const actor = await this.findUserForRoleCheck(context.actorId);
+      const isActorAdmin = actor?.role?.name === ROLES.ADMIN;
+
+      // Anti-privilege escalation: ADMIN role can only be modified by an ADMIN
+      if (role.name === ROLES.ADMIN && !isActorAdmin) {
+        throw new AppError(
+          "Chỉ Quản trị viên (Admin) mới có quyền chỉnh sửa quyền của vai trò Quản trị viên",
+          403,
+          ERROR_CODE.FORBIDDEN,
+        );
       }
 
+      // Anti-self-escalation: Non-admin actors cannot alter their own role's permissions
+      if (!isActorAdmin && actor?.roleId === roleId) {
+        throw new AppError(
+          "Không được phép tự thay đổi quyền cho vai trò của chính mình",
+          403,
+          ERROR_CODE.FORBIDDEN,
+        );
+      }
+    }
+
+    // Anti-lockout protection: ADMIN role must retain ROLE_PERMISSION_ASSIGN
+    if (role.name === ROLES.ADMIN) {
       const assignPermId = await this.getRolePermissionAssignId();
       if (assignPermId && assignPermId === permissionId) {
         throw new AppError(
@@ -328,16 +420,20 @@ export class RbacService {
       targetPermissions.has(PERMISSIONS.USER_ROLE_ASSIGN) ||
       targetPermissions.has(PERMISSIONS.ROLE_PERMISSION_ASSIGN);
 
-    // Privilege escalation guard: Chỉ Quản trị viên mới có quyền cấp vai trò Quản trị viên cho người dùng
-    if (isTargetAdmin && context?.actorId) {
+    // SEC-05 Fix: Privilege escalation guard
+    // Tách bạch rõ ràng: Chỉ người dùng mang vai trò thực tế ADMIN (actor.role.name === ROLES.ADMIN)
+    // mới có quyền cấp vai trò Quản trị viên (hoặc vai trò có quyền phân quyền) cho người dùng khác.
+    // Tuyệt đối không dùng quyền ủy nhiệm USER_ROLE_ASSIGN để xác định danh phận Admin (tránh vòng tròn quyền).
+    if (isTargetAdmin) {
+      if (!context?.actorId) {
+        throw new AppError(
+          "Chỉ Quản trị viên (Admin) mới có quyền cấp vai trò Quản trị viên cho người dùng",
+          403,
+          ERROR_CODE.FORBIDDEN,
+        );
+      }
       const actor = await this.findUserForRoleCheck(context.actorId);
-      const actorPermissions = actor?.roleId
-        ? await permissionCacheService.getRolePermissions(actor.roleId)
-        : new Set<string>();
-      const isActorAdmin =
-        actor?.role?.name === ROLES.ADMIN ||
-        actorPermissions.has(PERMISSIONS.USER_ROLE_ASSIGN) ||
-        actorPermissions.has(PERMISSIONS.ROLE_PERMISSION_ASSIGN);
+      const isActorAdmin = actor?.role?.name === ROLES.ADMIN;
 
       if (!isActorAdmin) {
         throw new AppError(
@@ -348,23 +444,18 @@ export class RbacService {
       }
     }
 
-    // Anti-lockout guard: Ngăn chặn hạ quyền Quản trị viên (Admin) duy nhất
+    // SEC-06 Fix: Anti-lockout guard: Ngăn chặn hạ quyền Quản trị viên (Admin) duy nhất
     if (
       currentUser.isActive &&
       !currentUser.deletedAt &&
       currentUser.roleId !== targetRole.id
     ) {
-      const currentPermissions = currentUser.roleId
-        ? await permissionCacheService.getRolePermissions(currentUser.roleId)
-        : new Set<string>();
-      const isCurrentAdmin =
-        currentUser.role?.name === ROLES.ADMIN ||
-        currentPermissions.has(PERMISSIONS.USER_ROLE_ASSIGN) ||
-        currentPermissions.has(PERMISSIONS.ROLE_PERMISSION_ASSIGN);
+      const isCurrentAdminRole = currentUser.role?.name === ROLES.ADMIN;
+      const isTargetAdminRole = targetRole.name === ROLES.ADMIN;
 
-      if (isCurrentAdmin && !isTargetAdmin) {
+      if (isCurrentAdminRole && !isTargetAdminRole) {
         const activeAdminsCount = await userRepository.countActiveAdmins(
-          currentUser.role?.name,
+          ROLES.ADMIN,
         );
         if (activeAdminsCount <= 1) {
           throw new AppError(
