@@ -20,9 +20,6 @@ importers:
       '@prisma/client':
         specifier: ^5.22.0
         version: 5.22.0(prisma@5.22.0)
-      '@smart-ppe/common':
-        specifier: git+https://github.com/smart-ppe-monitoring/smart-ppe-shared-contracts.git
-        version: https://codeload.github.com/smart-ppe-monitoring/smart-ppe-shared-contracts/tar.gz/38c57d25258b73126bdd31cb05d5cdb34f0c1555
       bcryptjs:
         specifier: ^3.0.3
         version: 3.0.3
@@ -421,10 +418,6 @@ packages:
 
   '@scarf/scarf@1.4.0':
     resolution: {integrity: sha512-xxeapPiUXdZAE3che6f3xogoJPeZgig6omHEy1rIY5WVsB3H2BHNnZH+gHG6x91SCWyQCzWGsuL2Hh3ClO5/qQ==}
-
-  '@smart-ppe/common@https://codeload.github.com/smart-ppe-monitoring/smart-ppe-shared-contracts/tar.gz/38c57d25258b73126bdd31cb05d5cdb34f0c1555':
-    resolution: {tarball: https://codeload.github.com/smart-ppe-monitoring/smart-ppe-shared-contracts/tar.gz/38c57d25258b73126bdd31cb05d5cdb34f0c1555}
-    version: 1.0.0
 
   '@smithy/core@3.36.0':
     resolution: {integrity: sha512-3hJiwG1F5t1SoXqp/yOCmYXziyx7ZVqF63S5W6YU201e/qwVaHPex+E/3vvyY9a3ORq/b+BydeNZpP2saQ9X2g==}
@@ -1537,11 +1530,6 @@ snapshots:
       '@prisma/debug': 5.22.0
 
   '@scarf/scarf@1.4.0': {}
-
-  '@smart-ppe/common@https://codeload.github.com/smart-ppe-monitoring/smart-ppe-shared-contracts/tar.gz/38c57d25258b73126bdd31cb05d5cdb34f0c1555':
-    dependencies:
-      uuidv7: 1.2.1
-      zod: 3.25.76
 
   '@smithy/core@3.36.0':
     dependencies:
