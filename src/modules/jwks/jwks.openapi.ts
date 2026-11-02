@@ -21,4 +21,23 @@ export function registerJwksOpenApi(): void {
       },
     },
   });
+
+  // GET /jwks.json (Alias)
+  openapiRegistry.registerPath({
+    method: "get",
+    path: "/jwks.json",
+    tags: ["Authentication"],
+    summary: "JSON Web Key Set (Alias endpoint)",
+    description: "Alias rút gọn của RFC 7517 JWKS endpoint.",
+    responses: {
+      200: {
+        description: "Tập hợp các Public Keys định dạng RFC 7517 JWKS",
+        content: {
+          "application/json": {
+            schema: jwksResponseSchema,
+          },
+        },
+      },
+    },
+  });
 }
