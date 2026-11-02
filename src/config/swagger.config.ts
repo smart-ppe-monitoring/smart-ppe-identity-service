@@ -10,6 +10,7 @@ import { registerCronOpenApi } from "../modules/cron/cron.openapi";
 import { registerHealthOpenApi } from "../modules/health/health.openapi";
 import { registerSecurityTxtOpenApi } from "../modules/security-txt/security-txt.openapi";
 import { registerJwksOpenApi } from "../modules/jwks/jwks.openapi";
+import { registerAuditOpenApi } from "../modules/audit/audit.openapi";
 
 // Tự động khởi tạo và đăng ký 100% routes & schemas từ Zod validation schemas
 registerAuthOpenApi();
@@ -22,6 +23,7 @@ registerCronOpenApi();
 registerHealthOpenApi();
 registerSecurityTxtOpenApi();
 registerJwksOpenApi();
+registerAuditOpenApi();
 
 export const swaggerOptions: SwaggerUiOptions | Record<string, any> = {
   explorer: true,
