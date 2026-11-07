@@ -23,6 +23,7 @@ const userSelect = {
   mustChangePassword: true,
   deletedAt: true,
   roleId: true,
+  siteIds: true,
   role: {
     select: {
       id: true,
@@ -45,6 +46,7 @@ const userSummarySelect = {
   mustChangePassword: true,
   deletedAt: true,
   roleId: true,
+  siteIds: true,
   role: {
     select: {
       id: true,
@@ -285,6 +287,7 @@ export class UserRepository {
         isActive: true,
         deletedAt: true,
         roleId: true,
+        siteIds: true,
         mustChangePassword: true,
         role: { select: { name: true } },
       },
@@ -358,6 +361,7 @@ export class UserRepository {
     avatarUrl?: string;
     phoneNumber?: string;
     roleId: string;
+    siteIds?: string[];
     isActive?: boolean;
     mustChangePassword?: boolean;
   }) {
@@ -369,6 +373,7 @@ export class UserRepository {
         avatarUrl: data.avatarUrl,
         phoneNumber: data.phoneNumber,
         roleId: data.roleId,
+        siteIds: data.siteIds || [],
         isActive: data.isActive,
         mustChangePassword: data.mustChangePassword ?? false,
       },
@@ -420,11 +425,24 @@ export class UserRepository {
 
   update(
     id: string,
-    data: { isActive?: boolean; fullName?: string; phoneNumber?: string },
+    data: {
+      isActive?: boolean;
+      fullName?: string;
+      phoneNumber?: string;
+      siteIds?: string[];
+    },
   ) {
     return prisma.user.update({
       where: { id },
       data,
+      select: userSelect,
+    });
+  }
+
+  assignSites(id: string, siteIds: string[]) {
+    return prisma.user.update({
+      where: { id },
+      data: { siteIds },
       select: userSelect,
     });
   }

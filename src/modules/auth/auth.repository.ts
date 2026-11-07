@@ -40,6 +40,7 @@ export class AuthRepository {
         mustChangePassword: true,
         createdAt: true,
         roleId: true,
+        siteIds: true,
         role: {
           select: {
             id: true,

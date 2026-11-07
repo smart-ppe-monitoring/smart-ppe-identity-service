@@ -73,6 +73,8 @@ export async function authMiddleware(
           email: string;
           role: string;
           roleId?: string;
+          siteId?: string | null;
+          siteIds?: string[];
           permissions?: string[];
           mustChangePassword?: boolean;
           purpose?: string;
@@ -162,11 +164,26 @@ export async function authMiddleware(
       return;
     }
 
+    const userSiteIds =
+      userState.siteIds && userState.siteIds.length > 0
+        ? userState.siteIds
+        : Array.isArray(payload.siteIds)
+          ? payload.siteIds
+          : payload.siteId
+            ? [payload.siteId]
+            : [];
+    const userSiteId =
+      userSiteIds.length > 0
+        ? userSiteIds[0]
+        : payload.siteId || null;
+
     req.user = {
       id: payload.id,
       email: payload.email,
       role: userState.roleName || payload.role,
       roleId: userState.roleId || payload.roleId,
+      siteId: userSiteId,
+      siteIds: userSiteIds,
       mustChangePassword: isMustChangePassword,
     };
 
@@ -205,6 +222,8 @@ export async function optionalAuthMiddleware(
       email: string;
       role: string;
       roleId?: string;
+      siteId?: string | null;
+      siteIds?: string[];
       purpose?: string;
       type?: string;
     };
@@ -220,11 +239,26 @@ export async function optionalAuthMiddleware(
 
     const userState = await permissionCacheService.getUserState(payload.id);
     if (userState && userState.isActive && !userState.deletedAt) {
+      const userSiteIds =
+        userState.siteIds && userState.siteIds.length > 0
+          ? userState.siteIds
+          : Array.isArray(payload.siteIds)
+            ? payload.siteIds
+            : payload.siteId
+              ? [payload.siteId]
+              : [];
+      const userSiteId =
+        userSiteIds.length > 0
+          ? userSiteIds[0]
+          : payload.siteId || null;
+
       req.user = {
         id: payload.id,
         email: payload.email,
         role: userState.roleName || payload.role,
         roleId: userState.roleId || payload.roleId,
+        siteId: userSiteId,
+        siteIds: userSiteIds,
       };
     }
   } catch {

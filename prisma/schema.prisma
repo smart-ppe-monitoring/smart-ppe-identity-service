@@ -8,24 +8,25 @@ datasource db {
 }
 
 model User {
-  id          String    @id @default(dbgenerated("uuid_generate_v7()")) @db.Uuid
-  email       String?   @unique
-  password    String?
-  fullName    String?   @map("full_name")
-  avatarUrl   String?   @map("avatar_url")
-  phoneNumber String?   @unique @map("phone_number")
-  isActive    Boolean   @default(false) @map("is_active")
+  id                   String    @id @default(dbgenerated("uuid_generate_v7()")) @db.Uuid
+  email                String?   @unique
+  password             String?
+  fullName             String?   @map("full_name")
+  avatarUrl            String?   @map("avatar_url")
+  phoneNumber          String?   @unique @map("phone_number")
+  isActive             Boolean   @default(false) @map("is_active")
   twoFactorEnabled     Boolean   @default(false) @map("two_factor_enabled")
   twoFactorSecret      String?   @map("two_factor_secret")
   twoFactorBackupCodes Json?     @map("two_factor_backup_codes")
   failedLoginAttempts  Int       @default(0) @map("failed_login_attempts")
   lockedUntil          DateTime? @map("locked_until")
   mustChangePassword   Boolean   @default(false) @map("must_change_password")
-  deletedAt   DateTime? @map("deleted_at")
-  deletedBy   String?   @map("deleted_by") @db.Uuid
-  roleId      String    @map("role_id") @db.Uuid
-  createdAt   DateTime  @default(now()) @map("created_at")
-  updatedAt   DateTime  @updatedAt @map("updated_at")
+  deletedAt            DateTime? @map("deleted_at")
+  deletedBy            String?   @map("deleted_by") @db.Uuid
+  roleId               String    @map("role_id") @db.Uuid
+  siteIds              String[]  @default([]) @map("site_ids")
+  createdAt            DateTime  @default(now()) @map("created_at")
+  updatedAt            DateTime  @updatedAt @map("updated_at")
 
   // Relations
   role                Role                 @relation(fields: [roleId], references: [id], onDelete: Restrict)
@@ -41,6 +42,7 @@ model User {
   @@index([deletedAt])
   @@index([roleId, isActive, deletedAt])
   @@index([isActive, deletedAt])
+  @@index([siteIds], type: Gin)
   @@map("users")
 }
 
@@ -177,8 +179,6 @@ model UserDevice {
   @@map("user_devices")
 }
 
-
-
 model MaintenanceConfig {
   id                String    @id @default(dbgenerated("uuid_generate_v7()")) @db.Uuid
   key               String    @unique @default("DEFAULT")
@@ -278,7 +278,6 @@ model SystemConfig {
   @@map("system_configs")
 }
 
-
 model OutboxEvent {
   id          String    @id @default(dbgenerated("uuid_generate_v7()")) @db.Uuid
   eventType   String    @map("event_type")
@@ -295,6 +294,3 @@ model OutboxEvent {
   @@index([eventType])
   @@map("outbox_events")
 }
-
-
-

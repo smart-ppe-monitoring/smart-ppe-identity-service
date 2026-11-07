@@ -360,6 +360,7 @@ const USER_BASE_PERMISSIONS: string[] = [
 ];
 
 const SAFETY_MANAGER_PERMISSIONS: string[] = [
+  "USER_READ",
   "PPE_SITE_READ",
   "PPE_SITE_MANAGE",
   "PPE_ZONE_READ",

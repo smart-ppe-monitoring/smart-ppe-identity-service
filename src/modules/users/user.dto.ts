@@ -17,6 +17,7 @@ export interface CreateUserDto {
   roleId: string;
   fullName?: string;
   phoneNumber?: string;
+  siteIds?: string[];
   mustChangePassword?: boolean;
 }
 
@@ -24,6 +25,11 @@ export interface UpdateUserDto {
   isActive?: boolean;
   fullName?: string;
   phoneNumber?: string;
+  siteIds?: string[];
+}
+
+export interface AssignUserSitesDto {
+  siteIds: string[];
 }
 
 export interface AdminResetPasswordDto {
@@ -42,6 +48,7 @@ export interface UserResponseDto {
     id: string;
     name: string;
   };
+  siteIds: string[];
   isActive: boolean;
   twoFactorEnabled?: boolean;
   mustChangePassword?: boolean;

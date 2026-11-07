@@ -274,6 +274,7 @@ export class AuthService {
       fullName: string | null;
       role: { name: string };
       roleId: string;
+      siteIds?: string[];
       mustChangePassword?: boolean;
     },
     metadata?: { userAgent?: string; ipAddress?: string },
@@ -292,12 +293,17 @@ export class AuthService {
       }
     }
 
+    const userSiteIds = Array.isArray(user.siteIds) ? user.siteIds : [];
+    const userSiteId = userSiteIds.length > 0 ? userSiteIds[0] : null;
+
     // SEC-16: Đưa cờ mustChangePassword vào JWT Access Token để áp đặt đổi mật khẩu
     const payload = {
       id: user.id,
       email: user.email,
       role: user.role.name,
       roleId: user.roleId,
+      siteId: userSiteId,
+      siteIds: userSiteIds,
       permissions: userPermissions,
       mustChangePassword: user.mustChangePassword ?? false,
       purpose: JWT_PURPOSE.ACCESS,
@@ -386,6 +392,8 @@ export class AuthService {
         fullName: user.fullName,
         role: user.role.name,
         roleId: user.roleId,
+        siteId: userSiteId,
+        siteIds: userSiteIds,
         permissions: userPermissions,
         mustChangePassword: user.mustChangePassword ?? false,
       },
@@ -828,12 +836,17 @@ export class AuthService {
       }
     }
 
+    const userSiteIds = Array.isArray(user.siteIds) ? user.siteIds : [];
+    const userSiteId = userSiteIds.length > 0 ? userSiteIds[0] : null;
+
     // SEC-15 & SEC-16: Bổ sung permissions và mustChangePassword vào Access Token khi refresh
     const newPayload = {
       id: user.id,
       email: user.email,
       role: user.role.name,
       roleId: user.roleId,
+      siteId: userSiteId,
+      siteIds: userSiteIds,
       permissions: userPermissions,
       mustChangePassword: user.mustChangePassword ?? false,
       purpose: JWT_PURPOSE.ACCESS,
@@ -901,6 +914,9 @@ export class AuthService {
       await permissionCacheService.getRolePermissions(user.roleId),
     );
 
+    const userSiteIds = Array.isArray((user as any).siteIds) ? (user as any).siteIds : [];
+    const userSiteId = userSiteIds.length > 0 ? userSiteIds[0] : null;
+
     return {
       id: user.id,
       email: user.email,
@@ -909,6 +925,8 @@ export class AuthService {
       phoneNumber: user.phoneNumber,
       role: user.role.name,
       roleId: user.roleId,
+      siteId: userSiteId,
+      siteIds: userSiteIds,
       permissions,
       isActive: user.isActive,
       twoFactorEnabled: user.twoFactorEnabled,

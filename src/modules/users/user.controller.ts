@@ -70,6 +70,21 @@ export class UserController {
     }
   };
 
+  assignSites = async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const { id } = req.params;
+      const { siteIds } = req.body;
+      const result = await this.service.assignSites(id, siteIds, req.user?.id);
+
+      res.json({
+        success: true,
+        data: result,
+      });
+    } catch (error) {
+      next(error);
+    }
+  };
+
   softDelete = async (req: Request, res: Response, next: NextFunction) => {
     try {
       const { id } = req.params;

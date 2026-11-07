@@ -48,6 +48,10 @@ export const createUserSchema = z.object({
     .string()
     .regex(/^[0-9]{10,11}$/, "Invalid phone number format")
     .optional(),
+  siteIds: z
+    .array(z.string().uuid("ID công trường phải là UUID hợp lệ"))
+    .max(100, "Tối đa 100 công trường")
+    .optional(),
   mustChangePassword: z.boolean().optional(),
 });
 
@@ -75,11 +79,21 @@ export const updateUserSchema = z
       .string()
       .regex(/^[0-9]{10,11}$/, "Invalid phone number format")
       .optional(),
+    siteIds: z
+      .array(z.string().uuid("ID công trường phải là UUID hợp lệ"))
+      .max(100, "Tối đa 100 công trường")
+      .optional(),
   })
   .refine(
     (data) => Object.keys(data).length > 0,
     "Ít nhất một trường cần được cung cấp để cập nhật",
   );
+
+export const assignUserSitesSchema = z.object({
+  siteIds: z
+    .array(z.string().uuid("ID công trường phải là UUID hợp lệ"))
+    .max(100, "Tối đa 100 công trường"),
+});
 
 export const userSessionParamsSchema = z.object({
   id: z.string().uuid("ID người dùng phải là UUID hợp lệ"),

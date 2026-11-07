@@ -10,6 +10,7 @@ import {
   createUserSchema,
   findAllUserSchema,
   updateUserSchema,
+  assignUserSitesSchema,
   userIdParamSchema,
   userSessionParamsSchema,
   userDeviceParamsSchema,
@@ -48,6 +49,14 @@ router.put(
   validate(userIdParamSchema, "params"),
   validate(updateUserSchema),
   controller.update,
+);
+router.put(
+  "/:id/sites",
+  authMiddleware,
+  requirePermission(PERMISSIONS.USER_UPDATE),
+  validate(userIdParamSchema, "params"),
+  validate(assignUserSitesSchema),
+  controller.assignSites,
 );
 router.delete(
   "/:id",

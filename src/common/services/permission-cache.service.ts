@@ -18,6 +18,7 @@ export interface CachedUserState {
   deletedAt: Date | null;
   roleId: string | null;
   roleName: string | null;
+  siteIds?: string[];
   mustChangePassword?: boolean;
 }
 
@@ -203,6 +204,7 @@ export class PermissionCacheService {
               deletedAt: user.deletedAt,
               roleId: user.roleId,
               roleName: user.role?.name || null,
+              siteIds: (user as any).siteIds || [],
               mustChangePassword: user.mustChangePassword ?? false,
             }
           : null;

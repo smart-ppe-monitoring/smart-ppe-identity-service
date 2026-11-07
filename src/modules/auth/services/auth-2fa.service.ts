@@ -360,12 +360,17 @@ export class Auth2FAService {
       }
     }
 
+    const userSiteIds = Array.isArray(user.siteIds) ? user.siteIds : [];
+    const userSiteId = userSiteIds.length > 0 ? userSiteIds[0] : null;
+
     // Cấp Access Token + Refresh Token chính thức (SEC-16: Đưa cờ mustChangePassword vào payload)
     const tokenPayload = {
       id: user.id,
       email: user.email,
       role: user.role.name,
       roleId: user.roleId,
+      siteId: userSiteId,
+      siteIds: userSiteIds,
       permissions: userPermissions,
       mustChangePassword: user.mustChangePassword ?? false,
       purpose: JWT_PURPOSE.ACCESS,
@@ -420,6 +425,8 @@ export class Auth2FAService {
         fullName: user.fullName,
         role: user.role.name,
         roleId: user.roleId,
+        siteId: userSiteId,
+        siteIds: userSiteIds,
         permissions,
       },
     };

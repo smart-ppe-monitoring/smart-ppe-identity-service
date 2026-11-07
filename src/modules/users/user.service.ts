@@ -190,6 +190,7 @@ export class UserService {
       roleId: data.roleId,
       fullName: data.fullName,
       phoneNumber: data.phoneNumber,
+      siteIds: data.siteIds || [],
       isActive: true, // Admin-created users are active by default
       mustChangePassword: data.mustChangePassword ?? true,
     });
@@ -246,21 +247,59 @@ export class UserService {
       }
     }
 
+    // Chặn non-admin tự gán hoặc thay đổi phạm vi công trường (Tenancy Escalation Prevention)
+    if (data.siteIds !== undefined && actorId) {
+      const actor = await this.findById(actorId);
+      const isActorAdmin = await this.isAdministrativeUser(actor);
+      if (!isActorAdmin) {
+        throw new AppError(
+          "Chỉ Quản trị viên (Admin) mới có quyền phân công công trường cho người dùng",
+          403,
+          ERROR_CODE.FORBIDDEN,
+        );
+      }
+    }
+
     const updatePayload: {
       isActive?: boolean;
       fullName?: string;
       phoneNumber?: string;
+      siteIds?: string[];
     } = {};
 
     if (data.isActive !== undefined) updatePayload.isActive = data.isActive;
     if (data.fullName !== undefined) updatePayload.fullName = data.fullName;
     if (data.phoneNumber !== undefined)
       updatePayload.phoneNumber = data.phoneNumber;
+    if (data.siteIds !== undefined)
+      updatePayload.siteIds = Array.from(new Set(data.siteIds));
 
     const updatedUser = await this.repository.update(id, updatePayload);
 
     permissionCacheService.invalidateUser(id);
     return updatedUser;
+  }
+
+  async assignSites(id: string, siteIds: string[], actorId?: string) {
+    const existing = await this.findById(id);
+
+    // Chặn non-admin phân công hoặc thay đổi phạm vi công trường
+    if (actorId) {
+      const actor = await this.findById(actorId);
+      const isActorAdmin = await this.isAdministrativeUser(actor);
+      if (!isActorAdmin) {
+        throw new AppError(
+          "Chỉ Quản trị viên (Admin) mới có quyền phân công công trường cho người dùng",
+          403,
+          ERROR_CODE.FORBIDDEN,
+        );
+      }
+    }
+
+    const uniqueSiteIds = Array.from(new Set(siteIds));
+    const updated = await this.repository.assignSites(id, uniqueSiteIds);
+    permissionCacheService.invalidateUser(id);
+    return updated;
   }
 
   async softDelete(
