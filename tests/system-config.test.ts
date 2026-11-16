@@ -5,6 +5,7 @@ import {
   updateSystemConfigSchema,
   toggleFeatureFlagSchema,
 } from "../src/modules/system-config/system-config.validation";
+import { AI_CONFIG_KEYS } from "../src/common/constants/system-config.constant";
 import { SystemConfigService } from "../src/modules/system-config/system-config.service";
 import { SystemConfigRepository } from "../src/modules/system-config/system-config.repository";
 import { requireFeatureFlag } from "../src/middlewares/feature-flag.middleware";
@@ -155,6 +156,16 @@ describe("System Configuration Service & Cache Operations", () => {
     const publicConfigs = await service.getPublicConfigs();
     assert.equal(publicConfigs["public.api_version"], "v1.0");
     assert.equal(publicConfigs["secret.internal_token"], undefined);
+  });
+
+  it("should seed ai.live_max_sessions as a public dynamic AI config and reflect updates", async () => {
+    await service.ensureDefaultConfigs();
+    const publicConfigs = await service.getPublicConfigs();
+    assert.equal(publicConfigs[AI_CONFIG_KEYS.LIVE_MAX_SESSIONS], 16);
+
+    await service.update(AI_CONFIG_KEYS.LIVE_MAX_SESSIONS, { value: 24 });
+    const updatedVal = await service.get<number>(AI_CONFIG_KEYS.LIVE_MAX_SESSIONS);
+    assert.equal(updatedVal, 24);
   });
 });
 

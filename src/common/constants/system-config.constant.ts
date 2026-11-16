@@ -126,7 +126,21 @@ export const DEFAULT_SYSTEM_CONFIGS = [
     category: SYSTEM_CONFIG_CATEGORY.GENERAL,
     isPublic: true,
   },
+
+  // AI Vision Live Engine Configurations
+  {
+    key: "ai.live_max_sessions",
+    value: 16,
+    description:
+      "Số luồng camera AI Live chạy đồng thời tối đa (cập nhật động cho AI service)",
+    category: SYSTEM_CONFIG_CATEGORY.INTEGRATION,
+    isPublic: true,
+  },
 ] as const;
+
+export const AI_CONFIG_KEYS = {
+  LIVE_MAX_SESSIONS: "ai.live_max_sessions",
+} as const;
 
 export const STORAGE_CONFIG_KEYS = {
   MAX_FILE_SIZE_MB: "storage.max_file_size_mb",
