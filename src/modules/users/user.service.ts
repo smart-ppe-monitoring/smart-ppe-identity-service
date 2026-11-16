@@ -642,4 +642,11 @@ export class UserService {
       userAgent: metadata?.userAgent,
     });
   }
+
+  /**
+   * Lấy danh sách người nhận cảnh báo vi phạm PPE (M2M internal lookup cho Notification Service).
+   */
+  async findIncidentNotificationRecipients(siteId?: string) {
+    return this.repository.findIncidentNotificationRecipients(siteId);
+  }
 }

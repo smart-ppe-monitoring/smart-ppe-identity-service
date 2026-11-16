@@ -50,6 +50,11 @@ const envSchema = z
      */
     GATEWAY_INTERNAL_SECRET: z.string().default(""),
 
+    /**
+     * Token nội bộ M2M dùng để xác thực các cuộc gọi service-to-service (fail-closed).
+     */
+    INTERNAL_SERVICE_TOKEN: z.string().default(""),
+
     // ── CORS ─────────────────────────────────────────────────────────────────
     ALLOWED_ORIGINS: z.string().default("*"),
 
@@ -289,6 +294,27 @@ const envSchema = z
         "GATEWAY_INTERNAL_SECRET phải có độ dài tối thiểu 32 ký tự khi được cấu hình trong môi trường production",
       path: ["GATEWAY_INTERNAL_SECRET"],
     },
+  )
+  .refine(
+    (env) => {
+      if (env.NODE_ENV !== "production") return true;
+      if (
+        typeof env.INTERNAL_SERVICE_TOKEN === "string" &&
+        env.INTERNAL_SERVICE_TOKEN.trim().length > 0
+      ) {
+        const trimmed = env.INTERNAL_SERVICE_TOKEN.trim();
+        return (
+          trimmed.length >= 32 &&
+          !trimmed.toLowerCase().includes("change_me")
+        );
+      }
+      return true;
+    },
+    {
+      message:
+        "INTERNAL_SERVICE_TOKEN phải có độ dài tối thiểu 32 ký tự và không dùng giá trị mẫu trong môi trường production",
+      path: ["INTERNAL_SERVICE_TOKEN"],
+    },
   );
 
 const _parsed = envSchema.safeParse(process.env);
@@ -400,6 +426,10 @@ export const envConfig = {
      * Empty string → kiểm tra bị tắt (monolith / dev mode).
      */
     internalSecret: _env.GATEWAY_INTERNAL_SECRET || "",
+  },
+  internalService: {
+    /** Token M2M dùng để xác thực các tích hợp nội bộ giữa các microservices. */
+    token: _env.INTERNAL_SERVICE_TOKEN || "",
   },
   cors: {
     allowedOrigins: _env.ALLOWED_ORIGINS.split(",").map((s) => s.trim()),

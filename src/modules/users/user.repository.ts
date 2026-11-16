@@ -74,6 +74,12 @@ const deviceSelect = {
 } satisfies Prisma.UserDeviceSelect;
 
 export class UserRepository {
+  private readonly db: typeof prisma;
+
+  constructor(dbClient?: typeof prisma) {
+    this.db = dbClient || prisma;
+  }
+
   async findAll(query: UserQueryDto = {}) {
     const {
       search,
@@ -561,7 +567,7 @@ export class UserRepository {
    * Lấy toàn bộ danh sách avatarUrl hiện tại của các User đang lưu trong DB
    */
   async getAllUserAvatarUrls(): Promise<string[]> {
-    const users = await prisma.user.findMany({
+    const users = await this.db.user.findMany({
       where: {
         avatarUrl: { not: null },
       },
@@ -620,6 +626,94 @@ export class UserRepository {
       email: string;
       fullName: string | null;
     }>;
+  }
+
+  /**
+   * Truy vấn danh sách người dùng đang hoạt động có thẩm quyền nhận cảnh báo vi phạm PPE
+   * cho một công trường (dùng cho M2M nội bộ từ Notification Service).
+   */
+  async findIncidentNotificationRecipients(siteId?: string): Promise<
+    Array<{
+      id: string;
+      email: string | null;
+      fullName: string | null;
+      role: string | null;
+    }>
+  > {
+    const incidentHandlerRoleFilter = {
+      OR: [
+        {
+          role: {
+            name: {
+              in: [
+                ROLES.SAFETY_MANAGER,
+                ROLES.SAFETY_OFFICER,
+                ROLES.MANAGER,
+              ],
+            },
+          },
+        },
+        {
+          role: {
+            permissions: {
+              some: {
+                permission: {
+                  name: {
+                    in: [
+                      PERMISSIONS.PPE_INCIDENT_REVIEW,
+                      PERMISSIONS.PPE_INCIDENT_MANAGE,
+                      PERMISSIONS.PPE_INCIDENT_UPDATE,
+                      PERMISSIONS.PPE_INCIDENT_READ,
+                    ],
+                  },
+                },
+              },
+            },
+          },
+        },
+      ],
+    };
+
+    const scopeFilter = siteId
+      ? {
+          OR: [
+            { role: { name: ROLES.ADMIN } },
+            {
+              AND: [
+                incidentHandlerRoleFilter,
+                { siteIds: { has: siteId } },
+              ],
+            },
+          ],
+        }
+      : {
+          role: { name: ROLES.ADMIN },
+        };
+
+    const users = await this.db.user.findMany({
+      where: {
+        isActive: true,
+        deletedAt: null,
+        ...scopeFilter,
+      },
+      select: {
+        id: true,
+        email: true,
+        fullName: true,
+        role: {
+          select: {
+            name: true,
+          },
+        },
+      },
+    });
+
+    return users.map((u) => ({
+      id: u.id,
+      email: u.email,
+      fullName: u.fullName,
+      role: u.role?.name || null,
+    }));
   }
 
   // ────── Audit Log ──────

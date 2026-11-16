@@ -227,4 +227,21 @@ export class UserController {
       next(error);
     }
   };
+
+  findIncidentNotificationRecipients = async (
+    req: Request,
+    res: Response,
+    next: NextFunction,
+  ) => {
+    try {
+      const siteId =
+        typeof req.query.siteId === "string" && req.query.siteId.trim()
+          ? req.query.siteId.trim()
+          : undefined;
+      const data = await this.service.findIncidentNotificationRecipients(siteId);
+      res.json({ success: true, data });
+    } catch (error) {
+      next(error);
+    }
+  };
 }

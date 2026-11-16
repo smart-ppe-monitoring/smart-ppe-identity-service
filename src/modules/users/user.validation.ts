@@ -104,3 +104,7 @@ export const userDeviceParamsSchema = z.object({
   id: z.string().uuid("ID người dùng phải là UUID hợp lệ"),
   deviceId: z.string().uuid("ID thiết bị phải là UUID hợp lệ"),
 });
+
+export const internalIncidentRecipientsQuerySchema = z.object({
+  siteId: z.string().uuid("ID công trường siteId phải là UUID hợp lệ").optional(),
+});

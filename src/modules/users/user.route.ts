@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { UserController } from "./user.controller";
 import { authMiddleware } from "../../middlewares/auth.middleware";
+import { requireInternalServiceToken } from "../../middlewares/internal-auth.middleware";
 import {
   requirePermission,
   requireAnyPermission,
@@ -15,6 +16,7 @@ import {
   userSessionParamsSchema,
   userDeviceParamsSchema,
   adminResetPasswordSchema,
+  internalIncidentRecipientsQuerySchema,
 } from "./user.validation";
 import { PERMISSIONS } from "../../common/constants/permission.constant";
 
@@ -27,6 +29,13 @@ router.get(
   requirePermission(PERMISSIONS.USER_READ),
   validate(findAllUserSchema, "query"),
   controller.findAll,
+);
+// Internal M2M endpoint (MUST stay before /:id param route)
+router.get(
+  "/internal/incident-recipients",
+  requireInternalServiceToken,
+  validate(internalIncidentRecipientsQuerySchema, "query"),
+  controller.findIncidentNotificationRecipients,
 );
 router.get(
   "/:id",
