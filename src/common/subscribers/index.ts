@@ -1,3 +1,4 @@
+import { envConfig } from "../../config/env.config";
 import { notificationSubscriber } from "./notification.subscriber";
 import { authCleanupSubscriber } from "./auth-cleanup.subscriber";
 import { storageCleanupSubscriber } from "./storage-cleanup.subscriber";
@@ -9,7 +10,9 @@ let isRegistered = false;
  */
 export function registerAllSubscribers(): void {
   if (isRegistered) return;
-  notificationSubscriber.register();
+  if (!envConfig.notification.standalone) {
+    notificationSubscriber.register();
+  }
   authCleanupSubscriber.register();
   storageCleanupSubscriber.register();
   isRegistered = true;

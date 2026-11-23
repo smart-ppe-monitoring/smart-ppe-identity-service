@@ -121,6 +121,13 @@ export class NotificationRepository {
   async resetEmailForRetry(_id: string) {
     return null;
   }
+
+  async findUserPreferenceForChannel(
+    _userId: string,
+    _channel: string,
+  ): Promise<{ enabled: boolean; severityThreshold?: string } | null> {
+    return null;
+  }
 }
 
 export const notificationRepository = new NotificationRepository();

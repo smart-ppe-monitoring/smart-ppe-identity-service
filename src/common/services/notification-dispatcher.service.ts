@@ -12,6 +12,8 @@ import {
 import { renderTemplateString } from "../helpers/template.helper";
 import { notificationRepository } from "../repositories/notification.repository";
 import { userRepository } from "../../modules/users/user.repository";
+import { FEATURE_FLAGS } from "../constants/system-config.constant";
+import { systemConfigService } from "../../modules/system-config/system-config.service";
 import { AppError } from "../errors/app-error";
 import { ERROR_CODE } from "../errors/error-code";
 
@@ -51,7 +53,16 @@ export interface SendWithTemplateOptions {
 }
 
 class NotificationDispatcher {
+  private async isNotificationsEnabled(): Promise<boolean> {
+    return systemConfigService.isFeatureEnabled(
+      FEATURE_FLAGS.NOTIFICATIONS_ENABLED,
+      true,
+    );
+  }
+
   async send(event: NotificationEvent): Promise<void> {
+    if (!(await this.isNotificationsEnabled())) return;
+
     const tasks: Promise<unknown>[] = [];
 
     if (event.channels.includes(NOTIFICATION_CHANNEL.WEB)) {
@@ -82,6 +93,8 @@ class NotificationDispatcher {
    * Tự động thay thế các biến {{variableName}} vào title/content cho WEB và subject/content cho EMAIL.
    */
   async sendWithTemplate(options: SendWithTemplateOptions): Promise<void> {
+    if (!(await this.isNotificationsEnabled())) return;
+
     const { userId, templateCode, variables, toEmail, actionUrl, metadata } =
       options;
 
@@ -192,6 +205,8 @@ class NotificationDispatcher {
       metadata?: Record<string, unknown>;
     },
   ): Promise<void> {
+    if (!(await this.isNotificationsEnabled())) return;
+
     await this.dispatchWeb(userId, { type, title, content, ...options });
   }
 }

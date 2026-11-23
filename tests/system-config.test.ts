@@ -5,7 +5,15 @@ import {
   updateSystemConfigSchema,
   toggleFeatureFlagSchema,
 } from "../src/modules/system-config/system-config.validation";
-import { AI_CONFIG_KEYS } from "../src/common/constants/system-config.constant";
+import {
+  AI_CONFIG_KEYS,
+  FEATURE_FLAGS,
+} from "../src/common/constants/system-config.constant";
+import { NOTIFICATION_CHANNEL } from "../src/common/constants/notification.constant";
+import { EVENT_NAMES } from "../src/common/constants/event.constant";
+import { EmailWorker } from "../src/common/workers/email-worker";
+import { NotificationSubscriber } from "../src/common/subscribers/notification.subscriber";
+import { EventBusService } from "../src/common/services/event-bus.service";
 import { SystemConfigService } from "../src/modules/system-config/system-config.service";
 import { SystemConfigRepository } from "../src/modules/system-config/system-config.repository";
 import { requireFeatureFlag } from "../src/middlewares/feature-flag.middleware";
@@ -166,6 +174,76 @@ describe("System Configuration Service & Cache Operations", () => {
     await service.update(AI_CONFIG_KEYS.LIVE_MAX_SESSIONS, { value: 24 });
     const updatedVal = await service.get<number>(AI_CONFIG_KEYS.LIVE_MAX_SESSIONS);
     assert.equal(updatedVal, 24);
+  });
+
+  it("should seed feature.notifications.enabled as public and upgrade legacy isPublic=false records without overwriting value", async () => {
+    mockDb.set(FEATURE_FLAGS.NOTIFICATIONS_ENABLED, {
+      id: "cfg-notif-legacy",
+      key: FEATURE_FLAGS.NOTIFICATIONS_ENABLED,
+      value: false,
+      description: "Legacy flag",
+      category: "FEATURE_FLAG",
+      isPublic: false,
+    });
+
+    await service.ensureDefaultConfigs();
+    const upgraded = mockDb.get(FEATURE_FLAGS.NOTIFICATIONS_ENABLED);
+    assert.equal(upgraded.isPublic, true);
+    assert.equal(upgraded.value, false);
+
+    const publicConfigs = await service.getPublicConfigs();
+    assert.equal(publicConfigs[FEATURE_FLAGS.NOTIFICATIONS_ENABLED], false);
+  });
+
+  it("should broadcast value on Redis PubSub only for public configs and omit value for private configs", async () => {
+    const publishedMessages: Array<{ channel: string; payload: Record<string, unknown> }> = [];
+    (service as any).isRedisAvailable = true;
+    (service as any).redisPublisher = {
+      publish: async (channel: string, message: string) => {
+        publishedMessages.push({
+          channel,
+          payload: JSON.parse(message) as Record<string, unknown>,
+        });
+        return 1;
+      },
+    };
+
+    // 1. Creating private config omits value from PubSub
+    await service.create({
+      key: "security.private_webhook_token",
+      value: "super-secret-value",
+      isPublic: false,
+    });
+    assert.equal(publishedMessages.length, 1);
+    assert.equal(publishedMessages[0].payload.key, "security.private_webhook_token");
+    assert.equal("value" in publishedMessages[0].payload, false);
+
+    // 2. Creating public config includes value in PubSub
+    await service.create({
+      key: "ui.banner_text",
+      value: "Welcome",
+      isPublic: true,
+    });
+    assert.equal(publishedMessages.length, 2);
+    assert.equal(publishedMessages[1].payload.key, "ui.banner_text");
+    assert.equal(publishedMessages[1].payload.value, "Welcome");
+
+    // 3. Updating public config to private omits value so satellite caches evict it
+    await service.update("ui.banner_text", {
+      value: "Internal only",
+      isPublic: false,
+    });
+    assert.equal(publishedMessages.length, 3);
+    assert.equal(publishedMessages[2].payload.key, "ui.banner_text");
+    assert.equal("value" in publishedMessages[2].payload, false);
+
+    // 4. Toggling public notification flag broadcasts new boolean value
+    await service.toggleFeatureFlag(FEATURE_FLAGS.NOTIFICATIONS_ENABLED, {
+      enabled: false,
+    });
+    assert.equal(publishedMessages.length, 4);
+    assert.equal(publishedMessages[3].payload.key, FEATURE_FLAGS.NOTIFICATIONS_ENABLED);
+    assert.equal(publishedMessages[3].payload.value, false);
   });
 });
 
@@ -364,5 +442,92 @@ describe("Database Seed Security Hardening (SEC-12)", () => {
       !/update:\s*\{[^}]*password:\s*u\.password/s.test(seedContent),
       "seed.ts user upsert update clause must not overwrite password with default password",
     );
+  });
+});
+
+describe("Notifications Feature Flag Enforcement (Identity Monolith Mode)", () => {
+  it("EmailWorker.process() skips claiming emails when feature.notifications.enabled is false", async () => {
+    let claimed = false;
+    const worker = new EmailWorker(
+      {
+        isFeatureEnabled: async () => false,
+      },
+      {
+        claimPendingEmails: async () => {
+          claimed = true;
+          return [];
+        },
+      } as any,
+    );
+
+    await worker.process();
+    assert.equal(claimed, false);
+  });
+
+  it("NotificationSubscriber skips AUTH_NEW_DEVICE_DETECTED when global flag or user EMAIL preference is disabled", async () => {
+    let sentCount = 0;
+    const mockMail: any = {
+      sendNewDeviceAlertEmail: async () => {
+        sentCount += 1;
+      },
+    };
+    const userId = "018f3a2b-c4d5-7e8f-9a0b-1c2d3e4f5a6b";
+
+    // 1. Global flag disabled
+    const bus1 = new EventBusService();
+    const sub1 = new NotificationSubscriber(
+      mockMail,
+      bus1,
+      { isFeatureEnabled: async () => false },
+      { findUserPreferenceForChannel: async () => ({ enabled: true }) },
+    );
+    sub1.register();
+    await bus1.dispatchDirectly({
+      id: "evt-1",
+      name: EVENT_NAMES.AUTH_NEW_DEVICE_DETECTED,
+      payload: { userId, email: "user@ppe.local", deviceName: "Chrome", ip: "1.2.3.4" },
+      timestamp: Date.now(),
+      source: "test",
+    });
+    assert.equal(sentCount, 0);
+    await bus1.close();
+
+    // 2. Global flag enabled, user EMAIL preference disabled
+    const bus2 = new EventBusService();
+    const sub2 = new NotificationSubscriber(
+      mockMail,
+      bus2,
+      { isFeatureEnabled: async () => true },
+      { findUserPreferenceForChannel: async () => ({ enabled: false }) },
+    );
+    sub2.register();
+    await bus2.dispatchDirectly({
+      id: "evt-2",
+      name: EVENT_NAMES.AUTH_NEW_DEVICE_DETECTED,
+      payload: { userId, email: "user@ppe.local", deviceName: "Chrome", ip: "1.2.3.4" },
+      timestamp: Date.now(),
+      source: "test",
+    });
+    assert.equal(sentCount, 0);
+    await bus2.close();
+
+    // 3. Both global flag and user preference enabled
+    const bus3 = new EventBusService();
+    const sub3 = new NotificationSubscriber(
+      mockMail,
+      bus3,
+      { isFeatureEnabled: async () => true },
+      { findUserPreferenceForChannel: async () => ({ enabled: true }) },
+    );
+    sub3.register();
+    await bus3.dispatchDirectly({
+      id: "evt-3",
+      name: EVENT_NAMES.AUTH_NEW_DEVICE_DETECTED,
+      payload: { userId, email: "user@ppe.local", deviceName: "Chrome", ip: "1.2.3.4" },
+      timestamp: Date.now(),
+      source: "test",
+    });
+    assert.equal(sentCount, 1);
+    await bus3.close();
   });
 });

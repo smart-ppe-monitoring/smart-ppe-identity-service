@@ -35,6 +35,24 @@ const isTestEnv =
   process.argv.some((arg) => arg.includes("test")) ||
   process.env.npm_lifecycle_event === "test";
 
+export function parseBooleanFlag(value: unknown, defaultState = true): boolean {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") return value !== 0;
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (["false", "0", "off", "no", ""].includes(normalized)) return false;
+    if (["true", "1", "on", "yes"].includes(normalized)) return true;
+    return defaultState;
+  }
+  if (value && typeof value === "object" && "enabled" in value) {
+    return parseBooleanFlag(
+      (value as { enabled?: unknown }).enabled,
+      defaultState,
+    );
+  }
+  return value === undefined || value === null ? defaultState : Boolean(value);
+}
+
 export class SystemConfigService {
   private cache = new Map<string, CacheEntry>();
   private readonly TTL_MS = 5 * 60 * 1000; // 5 minutes cache
@@ -131,6 +149,9 @@ export class SystemConfigService {
           category: item.category,
           isPublic: item.isPublic,
         });
+      } else if (item.isPublic && !existing.isPublic) {
+        await this.repository.update(item.key, { isPublic: true });
+        this.cache.delete(item.key);
       }
     }
   }
@@ -172,8 +193,8 @@ export class SystemConfigService {
     defaultState = true,
   ): Promise<boolean> {
     try {
-      const val = await this.get<boolean>(flagKey, defaultState);
-      return Boolean(val);
+      const val = await this.get<unknown>(flagKey, defaultState);
+      return parseBooleanFlag(val, defaultState);
     } catch {
       return defaultState;
     }
@@ -215,7 +236,7 @@ export class SystemConfigService {
     }
 
     const created = await this.repository.create(data);
-    this.invalidateCache(data.key);
+    this.invalidateCache(data.key, created.isPublic ? created.value : undefined);
 
     await this.repository.createAuditLog({
       actorId: context?.actorId,
@@ -252,7 +273,7 @@ export class SystemConfigService {
     }
 
     const updated = await this.repository.update(key, data);
-    this.invalidateCache(key);
+    this.invalidateCache(key, updated.isPublic ? updated.value : undefined);
 
     await this.repository.createAuditLog({
       actorId: context?.actorId,
@@ -284,6 +305,7 @@ export class SystemConfigService {
     context?: { actorId?: string; ipAddress?: string; userAgent?: string },
   ) {
     const existing = await this.repository.findByKey(key);
+    const defaultConfig = DEFAULT_SYSTEM_CONFIGS.find((item) => item.key === key);
 
     let record = existing;
     if (!record) {
@@ -293,17 +315,20 @@ export class SystemConfigService {
         value: data.enabled,
         description: data.description || "Feature Flag",
         category: SYSTEM_CONFIG_CATEGORY.FEATURE_FLAG,
-        isPublic: false,
+        isPublic: defaultConfig ? defaultConfig.isPublic : false,
       });
     } else {
       record = await this.repository.update(key, {
         value: data.enabled,
         category: SYSTEM_CONFIG_CATEGORY.FEATURE_FLAG,
         description: data.description ?? record.description ?? undefined,
+        ...(defaultConfig?.isPublic && !record.isPublic
+          ? { isPublic: true }
+          : {}),
       });
     }
 
-    this.invalidateCache(key);
+    this.invalidateCache(key, record.isPublic ? record.value : undefined);
 
     // Broadcast SSE event
     sseManagerService.broadcast({
@@ -357,7 +382,7 @@ export class SystemConfigService {
   /**
    * Xóa cache cục bộ và broadcast tới Redis cluster.
    */
-  invalidateCache(key?: string): void {
+  invalidateCache(key?: string, value?: unknown): void {
     if (key) {
       this.cache.delete(key);
     } else {
@@ -368,7 +393,11 @@ export class SystemConfigService {
       this.redisPublisher
         .publish(
           SYSTEM_CONFIG_PUBSUB_CHANNEL,
-          JSON.stringify({ key, timestamp: Date.now() }),
+          JSON.stringify({
+            key,
+            ...(value !== undefined ? { value } : {}),
+            timestamp: Date.now(),
+          }),
         )
         .catch(() => {});
     }

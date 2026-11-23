@@ -1,6 +1,14 @@
 import { eventBus, EventBusService } from "../services/event-bus.service";
 import { EVENT_NAMES } from "../constants/event.constant";
+import { NOTIFICATION_CHANNEL } from "../constants/notification.constant";
+import { FEATURE_FLAGS } from "../constants/system-config.constant";
 import { MailService } from "../services/mail.service";
+import { systemConfigService } from "../../modules/system-config/system-config.service";
+import {
+  notificationRepository,
+  NotificationRepository,
+} from "../repositories/notification.repository";
+import { isUuid } from "../helpers/uuid.helper";
 import {
   UserRegisteredPayload,
   VerificationRequestedPayload,
@@ -13,10 +21,32 @@ import {
 export class NotificationSubscriber {
   private readonly mailService: MailService;
   private readonly bus: EventBusService;
+  private readonly configService: {
+    isFeatureEnabled(
+      flagKey: string,
+      defaultState?: boolean,
+    ): Promise<boolean>;
+  };
+  private readonly repository: Pick<
+    NotificationRepository,
+    "findUserPreferenceForChannel"
+  >;
 
-  constructor(mailService?: MailService, bus?: EventBusService) {
+  constructor(
+    mailService?: MailService,
+    bus?: EventBusService,
+    configService?: {
+      isFeatureEnabled(
+        flagKey: string,
+        defaultState?: boolean,
+      ): Promise<boolean>;
+    },
+    repository?: Pick<NotificationRepository, "findUserPreferenceForChannel">,
+  ) {
     this.mailService = mailService || new MailService();
     this.bus = bus || eventBus;
+    this.configService = configService || systemConfigService;
+    this.repository = repository || notificationRepository;
   }
 
   public register(): void {
@@ -92,8 +122,28 @@ export class NotificationSubscriber {
     this.bus.subscribe(
       EVENT_NAMES.AUTH_NEW_DEVICE_DETECTED,
       async (envelope: EventEnvelope<NewDeviceDetectedPayload>) => {
-        const { email, deviceName, ip } = envelope.payload;
+        const { userId, email, deviceName, ip } = envelope.payload;
         try {
+          const notificationsEnabled =
+            await this.configService.isFeatureEnabled(
+              FEATURE_FLAGS.NOTIFICATIONS_ENABLED,
+              true,
+            );
+          if (!notificationsEnabled) {
+            return;
+          }
+
+          if (userId && isUuid(userId)) {
+            const emailPref =
+              await this.repository.findUserPreferenceForChannel(
+                userId,
+                NOTIFICATION_CHANNEL.EMAIL,
+              );
+            if (emailPref && emailPref.enabled === false) {
+              return;
+            }
+          }
+
           await this.mailService.sendNewDeviceAlertEmail(email, {
             deviceName,
             ipAddress: ip || "Không rõ",
