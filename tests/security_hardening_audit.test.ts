@@ -42,8 +42,8 @@ async function runSecurityVerification() {
 
   // Tạo payload kẻ tấn công mạo danh ADMIN
   const attackerPayload = {
-    sub: "0192e200-0000-7000-8000-attacker00001",
-    id: "0192e200-0000-7000-8000-attacker00001",
+    sub: "0192e200-0000-7000-8000-aaaa00000001",
+    id: "0192e200-0000-7000-8000-aaaa00000001",
     email: "attacker@exploit.local",
     role: "ADMIN",
     roleId: "0192e200-0000-7000-8000-000000000001",

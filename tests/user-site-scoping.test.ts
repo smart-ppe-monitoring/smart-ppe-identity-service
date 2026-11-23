@@ -6,6 +6,7 @@ import { jwtKeyService } from "../src/common/services/jwt-key.service";
 import { JWT_PURPOSE } from "../src/common/constants/jwt.constant";
 import { ROLES } from "../src/common/constants/role.constant";
 import { PERMISSIONS } from "../src/common/constants/permission.constant";
+import { permissionCacheService } from "../src/common/services/permission-cache.service";
 
 describe("Enterprise Multi-tenant: User Site Scoping & JWT Tenancy Claims", () => {
   const validSite1 = "018f2345-6789-7abc-def0-1234567890ab";
@@ -231,6 +232,14 @@ describe("Enterprise Multi-tenant: User Site Scoping & JWT Tenancy Claims", () =
 
       const nonAdminRoleId1 = "018f0000-0000-7000-8000-0000000000aa";
       const nonAdminRoleId2 = "018f0000-0000-7000-8000-0000000000bb";
+      (permissionCacheService as any).cache.set(nonAdminRoleId1, {
+        permissions: new Set<string>(),
+        expiresAt: Date.now() + 60_000,
+      });
+      (permissionCacheService as any).cache.set(nonAdminRoleId2, {
+        permissions: new Set<string>(),
+        expiresAt: Date.now() + 60_000,
+      });
 
       (service as any).repository = {
         findById: async (id: string) => {
@@ -259,6 +268,14 @@ describe("Enterprise Multi-tenant: User Site Scoping & JWT Tenancy Claims", () =
 
       const nonAdminRoleId1 = "018f0000-0000-7000-8000-0000000000aa";
       const nonAdminRoleId2 = "018f0000-0000-7000-8000-0000000000bb";
+      (permissionCacheService as any).cache.set(nonAdminRoleId1, {
+        permissions: new Set<string>(),
+        expiresAt: Date.now() + 60_000,
+      });
+      (permissionCacheService as any).cache.set(nonAdminRoleId2, {
+        permissions: new Set<string>(),
+        expiresAt: Date.now() + 60_000,
+      });
 
       (service as any).repository = {
         findById: async (id: string) => {
