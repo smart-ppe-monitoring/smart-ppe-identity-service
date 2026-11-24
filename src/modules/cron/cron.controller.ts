@@ -77,6 +77,32 @@ export class CronController {
       next(error);
     }
   };
+
+  updateJob = async (
+    req: Request,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> => {
+    try {
+      const jobName = req.params.jobName as CronJobName;
+      const result = await this.service.updateJob(jobName, req.body, {
+        actorId: req.user?.id,
+        ipAddress:
+          req.ip ||
+          (req.headers["x-forwarded-for"] as string) ||
+          req.socket.remoteAddress,
+        userAgent: req.headers["user-agent"],
+      });
+
+      res.json({
+        success: true,
+        message: `Cập nhật cấu hình tác vụ '${jobName}' thành công`,
+        data: result,
+      });
+    } catch (error) {
+      next(error);
+    }
+  };
 }
 
 export const cronController = new CronController();

@@ -1,6 +1,15 @@
 import { Prisma } from "@prisma/client";
 import { prisma } from "../../database/prisma.client";
-import { ActivitySummaryStatsDto } from "./cron.dto";
+import {
+  CRON_CONFIG_CATEGORY,
+  CRON_CONFIG_KEY_PREFIX,
+  CRON_JOB_NAMES,
+  CronJobName,
+} from "../../common/constants/cron.constant";
+import {
+  ActivitySummaryStatsDto,
+  StoredCronJobConfig,
+} from "./cron.dto";
 import {
   userRepository,
   UserRepository,
@@ -120,6 +129,81 @@ export class CronRepository {
     Array<{ id: string; email: string; fullName: string | null }>
   > {
     return this.userRepo.findAdminUsers();
+  }
+
+  /**
+   * Đọc cấu hình cron job bền vững đã lưu trong system_configs (nếu có)
+   */
+  async findJobConfig(jobName: CronJobName): Promise<StoredCronJobConfig | null> {
+    try {
+      const record = await prisma.systemConfig.findUnique({
+        where: { key: `${CRON_CONFIG_KEY_PREFIX}${jobName}` },
+      });
+      if (!record || !record.value || typeof record.value !== "object") {
+        return null;
+      }
+      return record.value as unknown as StoredCronJobConfig;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Đọc toàn bộ cấu hình cron jobs đã lưu trong system_configs
+   */
+  async findAllJobConfigs(): Promise<
+    Partial<Record<CronJobName, StoredCronJobConfig>>
+  > {
+    try {
+      const validNames = new Set<string>(Object.values(CRON_JOB_NAMES));
+      const rows = await prisma.systemConfig.findMany({
+        where: {
+          key: { startsWith: CRON_CONFIG_KEY_PREFIX },
+        },
+      });
+      const result: Partial<Record<CronJobName, StoredCronJobConfig>> = {};
+      for (const row of rows) {
+        const jobName = row.key.slice(CRON_CONFIG_KEY_PREFIX.length);
+        if (
+          validNames.has(jobName) &&
+          row.value &&
+          typeof row.value === "object" &&
+          !Array.isArray(row.value)
+        ) {
+          result[jobName as CronJobName] =
+            row.value as unknown as StoredCronJobConfig;
+        }
+      }
+      return result;
+    } catch {
+      return {};
+    }
+  }
+
+  /**
+   * Lưu bền vững cấu hình cron job vào bảng system_configs
+   */
+  async upsertJobConfig(
+    jobName: CronJobName,
+    config: StoredCronJobConfig,
+  ): Promise<void> {
+    const key = `${CRON_CONFIG_KEY_PREFIX}${jobName}`;
+    await prisma.systemConfig.upsert({
+      where: { key },
+      update: {
+        value: config as unknown as Prisma.InputJsonObject,
+        description: config.description,
+        category: CRON_CONFIG_CATEGORY,
+        isPublic: false,
+      },
+      create: {
+        key,
+        value: config as unknown as Prisma.InputJsonObject,
+        description: config.description,
+        category: CRON_CONFIG_CATEGORY,
+        isPublic: false,
+      },
+    });
   }
 
   /**

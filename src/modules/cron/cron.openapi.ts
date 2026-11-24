@@ -3,11 +3,41 @@ import {
   cronJobNameParamSchema,
   triggerCronJobSchema,
   listCronJobsQuerySchema,
+  updateCronJobSchema,
 } from "./cron.validation";
 import { z } from "zod";
 
 export function registerCronOpenApi(): void {
   openapiRegistry.register("TriggerCronJobRequest", triggerCronJobSchema);
+  openapiRegistry.register("UpdateCronJobRequest", updateCronJobSchema);
+
+  const cronJobItemSchema = z.object({
+    name: z.string().openapi({ example: "cleanup-audit-logs" }),
+    cron: z.string().openapi({ example: "0 2 * * *" }),
+    schedule: z.object({
+      frequency: z.enum(["HOURLY", "DAILY", "WEEKLY", "MONTHLY"]),
+      everyHours: z.number().optional(),
+      dayOfWeek: z.number().optional(),
+      dayOfMonth: z.number().optional(),
+      hour: z.number().optional(),
+      minute: z.number(),
+    }),
+    scheduleLabel: z
+      .string()
+      .openapi({ example: "02:00 hàng ngày (UTC+7)" }),
+    description: z.string().openapi({
+      example: "Dọn dẹp các bản ghi Audit Logs cũ hơn 30 ngày",
+    }),
+    isEnabled: z.boolean().openapi({
+      example: true,
+      description: "Trạng thái bật/tắt lịch trình tự động của job",
+    }),
+    defaultParams: z.object({
+      retentionDays: z.number().optional(),
+      maxAgeHours: z.number().optional(),
+    }),
+    lastStatus: z.string().openapi({ example: "READY" }),
+  });
 
   // GET /cron/jobs
   openapiRegistry.registerPath({
@@ -25,21 +55,7 @@ export function registerCronOpenApi(): void {
           "application/json": {
             schema: z.object({
               success: z.boolean().openapi({ example: true }),
-              data: z.array(
-                z.object({
-                  name: z.string().openapi({ example: "cleanup-audit-logs" }),
-                  cron: z.string().openapi({ example: "0 2 * * *" }),
-                  description: z.string().openapi({
-                    example: "Dọn dẹp các bản ghi Audit Logs cũ hơn 30 ngày",
-                  }),
-                  isEnabled: z.boolean().openapi({
-                    example: true,
-                    description:
-                      "Trạng thái bật/tắt lịch trình tự động của job",
-                  }),
-                  lastStatus: z.string().openapi({ example: "READY" }),
-                }),
-              ),
+              data: z.array(cronJobItemSchema),
             }),
           },
         },
@@ -122,6 +138,68 @@ export function registerCronOpenApi(): void {
         },
       },
       400: { description: "Tên job không hợp lệ" },
+      403: { description: "Không có quyền CRON_JOB_MANAGE" },
+    },
+  });
+
+  // PATCH /cron/jobs/:jobName
+  openapiRegistry.registerPath({
+    method: "patch",
+    path: "/cron/jobs/{jobName}",
+    tags: ["Scheduled Tasks & Cron Jobs"],
+    summary: "Cập nhật lịch chạy trực quan, mô tả và tham số mặc định của Cron Job",
+    security: [{ BearerAuth: [] }],
+    request: {
+      params: cronJobNameParamSchema,
+      body: {
+        content: { "application/json": { schema: updateCronJobSchema } },
+      },
+    },
+    responses: {
+      200: {
+        description: "Cập nhật cấu hình tác vụ thành công",
+        content: {
+          "application/json": {
+            schema: z.object({
+              success: z.boolean().openapi({ example: true }),
+              message: z.string(),
+              data: cronJobItemSchema,
+            }),
+          },
+        },
+      },
+      400: { description: "Tham số lịch chạy không hợp lệ" },
+      403: { description: "Không có quyền CRON_JOB_MANAGE" },
+    },
+  });
+
+  // PUT /cron/jobs/:jobName
+  openapiRegistry.registerPath({
+    method: "put",
+    path: "/cron/jobs/{jobName}",
+    tags: ["Scheduled Tasks & Cron Jobs"],
+    summary: "Cập nhật lịch chạy trực quan, mô tả và tham số mặc định của Cron Job (PUT alias)",
+    security: [{ BearerAuth: [] }],
+    request: {
+      params: cronJobNameParamSchema,
+      body: {
+        content: { "application/json": { schema: updateCronJobSchema } },
+      },
+    },
+    responses: {
+      200: {
+        description: "Cập nhật cấu hình tác vụ thành công",
+        content: {
+          "application/json": {
+            schema: z.object({
+              success: z.boolean().openapi({ example: true }),
+              message: z.string(),
+              data: cronJobItemSchema,
+            }),
+          },
+        },
+      },
+      400: { description: "Tham số lịch chạy không hợp lệ" },
       403: { description: "Không có quyền CRON_JOB_MANAGE" },
     },
   });

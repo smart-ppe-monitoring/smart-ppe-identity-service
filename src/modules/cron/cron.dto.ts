@@ -1,13 +1,38 @@
-import { CronJobName } from "../../common/constants/cron.constant";
+import {
+  CronJobName,
+  CronScheduleConfig,
+} from "../../common/constants/cron.constant";
+
+export interface CronJobDefaultParamsDto {
+  retentionDays?: number;
+  maxAgeHours?: number;
+}
+
+export interface StoredCronJobConfig {
+  cron: string;
+  description: string;
+  isEnabled: boolean;
+  defaultParams: CronJobDefaultParamsDto;
+}
 
 export interface CronJobItemDto {
   name: CronJobName;
   cron: string;
+  schedule: CronScheduleConfig;
+  scheduleLabel: string;
   description: string;
   isEnabled: boolean;
+  defaultParams: CronJobDefaultParamsDto;
   nextRun?: string;
   lastRun?: string;
   lastStatus?: string;
+}
+
+export interface UpdateCronJobDto {
+  schedule?: CronScheduleConfig;
+  description?: string;
+  isEnabled?: boolean;
+  defaultParams?: CronJobDefaultParamsDto;
 }
 
 export interface TriggerCronJobDto {

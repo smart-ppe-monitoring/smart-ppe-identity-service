@@ -7,6 +7,7 @@ import {
   cronJobNameParamSchema,
   triggerCronJobSchema,
   listCronJobsQuerySchema,
+  updateCronJobSchema,
 } from "./cron.validation";
 import { PERMISSIONS } from "../../common/constants/permission.constant";
 
@@ -34,6 +35,22 @@ router.patch(
   requirePermission(PERMISSIONS.CRON_JOB_MANAGE),
   validate(cronJobNameParamSchema, "params"),
   cronController.toggleJob,
+);
+
+router.patch(
+  "/jobs/:jobName",
+  requirePermission(PERMISSIONS.CRON_JOB_MANAGE),
+  validate(cronJobNameParamSchema, "params"),
+  validate(updateCronJobSchema),
+  cronController.updateJob,
+);
+
+router.put(
+  "/jobs/:jobName",
+  requirePermission(PERMISSIONS.CRON_JOB_MANAGE),
+  validate(cronJobNameParamSchema, "params"),
+  validate(updateCronJobSchema),
+  cronController.updateJob,
 );
 
 export default router;

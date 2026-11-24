@@ -16,6 +16,7 @@ import { outboxWorker } from "./common/workers/outbox.worker";
 import { eventBusWorker } from "./common/workers/event-bus.worker";
 import { webhookQueue } from "./common/queues/webhook.queue";
 import { cronQueue } from "./common/queues/cron.queue";
+import { cronService } from "./modules/cron/cron.service";
 import { maintenanceCacheService } from "./common/services/maintenance-cache.service";
 import { systemConfigService } from "./modules/system-config/system-config.service";
 import { permissionCacheService } from "./common/services/permission-cache.service";
@@ -69,7 +70,7 @@ export async function startWorkerProcess(): Promise<void> {
   eventBusWorker.start();
   outboxWorker.start();
 
-  await cronQueue.registerSchedules().catch((err) => {
+  await cronService.syncSchedulers().catch((err) => {
     console.warn(
       "[Worker Server] Failed to register cron schedules:",
       err.message,

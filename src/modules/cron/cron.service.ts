@@ -6,9 +6,14 @@ import { notificationDispatcher } from "../../common/services/notification-dispa
 import {
   CRON_JOB_NAMES,
   CronJobName,
+  CronScheduleConfig,
+  DEFAULT_CRON_PARAMS,
   DEFAULT_CRON_SCHEDULES,
   DEFAULT_AUDIT_LOG_RETENTION_DAYS,
   DEFAULT_UNCONFIRMED_UPLOAD_MAX_AGE_HOURS,
+  buildCronFromSchedule,
+  formatCronScheduleLabel,
+  parseScheduleFromCron,
 } from "../../common/constants/cron.constant";
 import {
   AUDIT_ACTION,
@@ -23,25 +28,33 @@ import {
   getVietnamDayRange,
 } from "../../common/helpers/date.helper";
 import {
+  CronJobDefaultParamsDto,
   CronJobExecutionResultDto,
   CronJobItemDto,
+  StoredCronJobConfig,
   ToggleCronJobResultDto,
+  UpdateCronJobDto,
 } from "./cron.dto";
 import { CronQueueService, cronQueue } from "../../common/queues/cron.queue";
 import { outboxRepository } from "../../common/repositories/outbox.repository";
 
 export class CronService {
   /**
-   * In-memory store: trạng thái enable/disable của từng cron job.
-   * Khởi tạo tất cả jobs là enabled (true).
-   * State mất khi restart server — không cần DB model.
+   * Cache cấu hình lịch chạy, mô tả, trạng thái bật/tắt và tham số mặc định của từng cron job.
+   * Khởi tạo từ DEFAULT_CRON_SCHEDULES và đồng bộ bền vững với bảng system_configs.
    */
-  private readonly enabledJobs: Map<CronJobName, boolean> = new Map(
+  private readonly jobConfigs: Map<CronJobName, StoredCronJobConfig> = new Map(
     (Object.keys(DEFAULT_CRON_SCHEDULES) as CronJobName[]).map((name) => [
       name,
-      true,
+      {
+        cron: DEFAULT_CRON_SCHEDULES[name].cron,
+        description: DEFAULT_CRON_SCHEDULES[name].description,
+        isEnabled: true,
+        defaultParams: { ...DEFAULT_CRON_PARAMS[name] },
+      },
     ]),
   );
+  private configsLoaded = false;
 
   constructor(
     private readonly repository: CronRepository = cronRepository,
@@ -49,26 +62,158 @@ export class CronService {
     private readonly cronQueueService: CronQueueService = cronQueue,
   ) {}
 
+  private sanitizeDefaultParams(
+    jobName: CronJobName,
+    rawParams?: CronJobDefaultParamsDto | Record<string, unknown>,
+    fallback: CronJobDefaultParamsDto = DEFAULT_CRON_PARAMS[jobName] || {},
+  ): CronJobDefaultParamsDto {
+    if (jobName === CRON_JOB_NAMES.CLEANUP_AUDIT_LOGS) {
+      const rawDays = rawParams?.retentionDays;
+      if (rawDays !== undefined) {
+        if (
+          typeof rawDays !== "number" ||
+          !Number.isInteger(rawDays) ||
+          rawDays < 30 ||
+          rawDays > 3650
+        ) {
+          throw new AppError(
+            "Thời gian lưu trữ Audit Log mặc định phải là số nguyên từ 30 đến 3650 ngày",
+            400,
+            ERROR_CODE.VALIDATION_ERROR,
+          );
+        }
+        return { retentionDays: rawDays };
+      }
+      return {
+        retentionDays:
+          fallback.retentionDays ?? DEFAULT_AUDIT_LOG_RETENTION_DAYS,
+      };
+    }
+
+    if (jobName === CRON_JOB_NAMES.CLEANUP_UNCONFIRMED_UPLOADS) {
+      const rawHours = rawParams?.maxAgeHours;
+      if (rawHours !== undefined) {
+        if (
+          typeof rawHours !== "number" ||
+          !Number.isInteger(rawHours) ||
+          rawHours < 1 ||
+          rawHours > 720
+        ) {
+          throw new AppError(
+            "Thời gian tối đa dọn dẹp upload phải là số nguyên từ 1 đến 720 giờ",
+            400,
+            ERROR_CODE.VALIDATION_ERROR,
+          );
+        }
+        return { maxAgeHours: rawHours };
+      }
+      return {
+        maxAgeHours:
+          fallback.maxAgeHours ?? DEFAULT_UNCONFIRMED_UPLOAD_MAX_AGE_HOURS,
+      };
+    }
+
+    return {};
+  }
+
+  private async ensureConfigsLoaded(): Promise<void> {
+    if (this.configsLoaded) return;
+    this.configsLoaded = true;
+
+    if (typeof (this.repository as any).findAllJobConfigs !== "function") {
+      return;
+    }
+
+    const storedMap = await (this.repository as any).findAllJobConfigs();
+    if (!storedMap || typeof storedMap !== "object") {
+      return;
+    }
+
+    for (const jobName of Object.keys(DEFAULT_CRON_SCHEDULES) as CronJobName[]) {
+      const stored = storedMap[jobName];
+      if (!stored || typeof stored !== "object") continue;
+
+      const current = this.jobConfigs.get(jobName)!;
+      const mergedParams =
+        stored.defaultParams && typeof stored.defaultParams === "object"
+          ? { ...current.defaultParams, ...stored.defaultParams }
+          : current.defaultParams;
+
+      this.jobConfigs.set(jobName, {
+        cron:
+          typeof stored.cron === "string" && stored.cron.trim()
+            ? stored.cron.trim()
+            : current.cron,
+        description:
+          typeof stored.description === "string" && stored.description.trim()
+            ? stored.description.trim()
+            : current.description,
+        isEnabled:
+          typeof stored.isEnabled === "boolean"
+            ? stored.isEnabled
+            : current.isEnabled,
+        defaultParams: mergedParams,
+      });
+    }
+  }
+
+  private toJobItemDto(
+    jobName: CronJobName,
+    config: StoredCronJobConfig,
+  ): CronJobItemDto {
+    const schedule: CronScheduleConfig = parseScheduleFromCron(config.cron);
+    return {
+      name: jobName,
+      cron: config.cron,
+      schedule,
+      scheduleLabel: formatCronScheduleLabel(schedule),
+      description: config.description,
+      isEnabled: config.isEnabled,
+      defaultParams: { ...config.defaultParams },
+      lastStatus: "READY",
+    };
+  }
+
+  /**
+   * Nạp toàn bộ cấu hình cron job từ CSDL và đồng bộ vào BullMQ khi server khởi động
+   */
+  async syncSchedulers(): Promise<void> {
+    await this.ensureConfigsLoaded();
+    const scheduleMap: Partial<
+      Record<
+        CronJobName,
+        { cron: string; isEnabled: boolean; params: Record<string, unknown> }
+      >
+    > = {};
+
+    for (const [jobName, cfg] of this.jobConfigs.entries()) {
+      scheduleMap[jobName] = {
+        cron: cfg.cron,
+        isEnabled: cfg.isEnabled,
+        params: { ...cfg.defaultParams },
+      };
+    }
+
+    await this.cronQueueService.registerSchedules(scheduleMap);
+  }
+
   /**
    * Danh sách toàn bộ các tác vụ định kỳ đã đăng ký trong hệ thống
    */
   async listJobs(search?: string): Promise<CronJobItemDto[]> {
-    const jobs: CronJobItemDto[] = Object.entries(DEFAULT_CRON_SCHEDULES).map(
-      ([name, config]) => ({
-        name: name as CronJobName,
-        cron: config.cron,
-        description: config.description,
-        isEnabled: this.enabledJobs.get(name as CronJobName) ?? true,
-        lastStatus: "READY",
-      }),
-    );
+    await this.ensureConfigsLoaded();
+
+    const jobs: CronJobItemDto[] = (
+      Object.keys(DEFAULT_CRON_SCHEDULES) as CronJobName[]
+    ).map((name) => this.toJobItemDto(name, this.jobConfigs.get(name)!));
 
     if (search) {
       const lower = search.toLowerCase();
       return jobs.filter(
         (j) =>
           j.name.toLowerCase().includes(lower) ||
-          j.description.toLowerCase().includes(lower),
+          j.description.toLowerCase().includes(lower) ||
+          j.scheduleLabel.toLowerCase().includes(lower),
       );
     }
 
@@ -76,20 +221,107 @@ export class CronService {
   }
 
   /**
+   * Cập nhật lịch chạy trực quan, mô tả, trạng thái hoặc tham số mặc định của Cron Job
+   */
+  async updateJob(
+    jobName: CronJobName,
+    dto: UpdateCronJobDto,
+    actorContext?: { actorId?: string; ipAddress?: string; userAgent?: string },
+  ): Promise<CronJobItemDto> {
+    if (!DEFAULT_CRON_SCHEDULES[jobName]) {
+      throw new AppError(
+        `Job name '${jobName}' không được hỗ trợ`,
+        400,
+        ERROR_CODE.VALIDATION_ERROR,
+      );
+    }
+
+    await this.ensureConfigsLoaded();
+    const prev = this.jobConfigs.get(jobName)!;
+
+    const nextCron = dto.schedule
+      ? buildCronFromSchedule(dto.schedule)
+      : prev.cron;
+    const nextDescription =
+      dto.description !== undefined && dto.description.trim().length > 0
+        ? dto.description.trim()
+        : prev.description;
+    const nextIsEnabled =
+      dto.isEnabled !== undefined ? dto.isEnabled : prev.isEnabled;
+    const nextDefaultParams =
+      dto.defaultParams !== undefined
+        ? this.sanitizeDefaultParams(jobName, dto.defaultParams, prev.defaultParams)
+        : { ...prev.defaultParams };
+
+    const nextConfig: StoredCronJobConfig = {
+      cron: nextCron,
+      description: nextDescription,
+      isEnabled: nextIsEnabled,
+      defaultParams: nextDefaultParams,
+    };
+
+    if (typeof (this.repository as any).upsertJobConfig === "function") {
+      await (this.repository as any).upsertJobConfig(jobName, nextConfig);
+    }
+    this.jobConfigs.set(jobName, nextConfig);
+
+    if (nextConfig.isEnabled) {
+      await this.cronQueueService.enableJobScheduler(jobName, {
+        cron: nextConfig.cron,
+        params: { ...nextConfig.defaultParams },
+      });
+    } else {
+      await this.cronQueueService.disableJobScheduler(jobName);
+    }
+
+    await this.repository.createAuditLog({
+      actorId: actorContext?.actorId,
+      action: AUDIT_ACTION.UPDATE_CRON_JOB,
+      targetType: AUDIT_TARGET_TYPE.CRON_JOB,
+      targetId: jobName,
+      details: {
+        previous: prev,
+        updated: nextConfig,
+        scheduleInput: dto.schedule ?? null,
+      },
+      ipAddress: actorContext?.ipAddress,
+      userAgent: actorContext?.userAgent,
+    });
+
+    return this.toJobItemDto(jobName, nextConfig);
+  }
+
+  /**
    * Toggle trạng thái enable/disable của một cron job.
-   * Cập nhật in-memory store và đồng bộ với BullMQ scheduler.
+   * Lưu bền vững và đồng bộ với BullMQ scheduler.
    */
   async toggleJob(
     jobName: CronJobName,
     actorContext?: { actorId?: string; ipAddress?: string; userAgent?: string },
   ): Promise<ToggleCronJobResultDto> {
-    const current = this.enabledJobs.get(jobName) ?? true;
-    const newState = !current;
+    await this.ensureConfigsLoaded();
+    const current = this.jobConfigs.get(jobName) || {
+      cron: DEFAULT_CRON_SCHEDULES[jobName].cron,
+      description: DEFAULT_CRON_SCHEDULES[jobName].description,
+      isEnabled: true,
+      defaultParams: { ...DEFAULT_CRON_PARAMS[jobName] },
+    };
+    const newState = !current.isEnabled;
+    const nextConfig: StoredCronJobConfig = {
+      ...current,
+      isEnabled: newState,
+    };
 
-    this.enabledJobs.set(jobName, newState);
+    if (typeof (this.repository as any).upsertJobConfig === "function") {
+      await (this.repository as any).upsertJobConfig(jobName, nextConfig);
+    }
+    this.jobConfigs.set(jobName, nextConfig);
 
     if (newState) {
-      await this.cronQueueService.enableJobScheduler(jobName);
+      await this.cronQueueService.enableJobScheduler(jobName, {
+        cron: nextConfig.cron,
+        params: { ...nextConfig.defaultParams },
+      });
     } else {
       await this.cronQueueService.disableJobScheduler(jobName);
     }
@@ -348,6 +580,14 @@ export class CronService {
     params: Record<string, unknown> = {},
     actorContext?: { actorId?: string; ipAddress?: string; userAgent?: string },
   ): Promise<CronJobExecutionResultDto> {
+    await this.ensureConfigsLoaded();
+    const configuredDefaults =
+      this.jobConfigs.get(jobName)?.defaultParams || {};
+    const effectiveParams: Record<string, unknown> = {
+      ...configuredDefaults,
+      ...params,
+    };
+
     const startTime = Date.now();
 
     let executionData: Record<string, unknown> | undefined;
@@ -355,16 +595,16 @@ export class CronService {
     switch (jobName) {
       case CRON_JOB_NAMES.CLEANUP_AUDIT_LOGS: {
         const days =
-          typeof params["retentionDays"] === "number"
-            ? params["retentionDays"]
+          typeof effectiveParams["retentionDays"] === "number"
+            ? effectiveParams["retentionDays"]
             : DEFAULT_AUDIT_LOG_RETENTION_DAYS;
         executionData = await this.executeAuditLogCleanup(days);
         break;
       }
       case CRON_JOB_NAMES.CLEANUP_UNCONFIRMED_UPLOADS: {
         const hours =
-          typeof params["maxAgeHours"] === "number"
-            ? params["maxAgeHours"]
+          typeof effectiveParams["maxAgeHours"] === "number"
+            ? effectiveParams["maxAgeHours"]
             : DEFAULT_UNCONFIRMED_UPLOAD_MAX_AGE_HOURS;
         executionData = await this.executeUploadsCleanup(hours);
         break;

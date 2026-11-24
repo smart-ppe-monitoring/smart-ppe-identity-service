@@ -17,6 +17,7 @@ import { outboxWorker } from "./common/workers/outbox.worker";
 import { eventBusWorker } from "./common/workers/event-bus.worker";
 import { webhookQueue } from "./common/queues/webhook.queue";
 import { cronQueue } from "./common/queues/cron.queue";
+import { cronService } from "./modules/cron/cron.service";
 import { maintenanceCacheService } from "./common/services/maintenance-cache.service";
 import { systemConfigService } from "./modules/system-config/system-config.service";
 import { sseManagerService } from "./common/services/sse-manager.service";
@@ -48,7 +49,7 @@ const server = app.listen(PORT, async () => {
   cronWorker.start();
   eventBusWorker.start();
   outboxWorker.start();
-  await cronQueue.registerSchedules();
+  await cronService.syncSchedulers();
 });
 
 // Graceful Shutdown Handler

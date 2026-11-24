@@ -79,26 +79,59 @@ export class CronQueueService {
   }
 
   /**
-   * Đăng ký tất cả các Repeatable Cron Jobs theo biểu thức cron chuẩn.
-   * @param disabledJobs Danh sách tên job cần tạm dừng (sẽ xóa khỏi scheduler nếu đang tồn tại)
+   * Đăng ký tất cả các Repeatable Cron Jobs theo biểu thức cron chuẩn hoặc cấu hình động từ DB.
+   * @param configOrDisabled Danh sách job bị tắt (legacy) hoặc bản đồ cấu hình từng job
    */
-  async registerSchedules(disabledJobs: string[] = []): Promise<void> {
+  async registerSchedules(
+    configOrDisabled:
+      | string[]
+      | Partial<
+          Record<
+            CronJobName,
+            {
+              cron: string;
+              isEnabled?: boolean;
+              params?: Record<string, unknown>;
+            }
+          >
+        > = [],
+  ): Promise<void> {
     if (!this.queue || !this.isRedisAvailable) return;
 
+    const isDisabledArray = Array.isArray(configOrDisabled);
+    const disabledSet = new Set(isDisabledArray ? configOrDisabled : []);
+    const customMap = isDisabledArray ? {} : configOrDisabled;
+
     try {
-      for (const [jobName, config] of Object.entries(DEFAULT_CRON_SCHEDULES)) {
-        if (disabledJobs.includes(jobName)) {
+      for (const [rawJobName, defaultConfig] of Object.entries(
+        DEFAULT_CRON_SCHEDULES,
+      )) {
+        const jobName = rawJobName as CronJobName;
+        const override = customMap[jobName];
+        const isDisabled = isDisabledArray
+          ? disabledSet.has(jobName)
+          : override?.isEnabled === false;
+
+        if (isDisabled) {
           await this.queue.removeJobScheduler(jobName).catch(() => {});
           continue;
         }
+
+        const pattern = override?.cron || defaultConfig.cron;
+        const params =
+          override?.params && Object.keys(override.params).length > 0
+            ? override.params
+            : undefined;
+
         await this.queue.upsertJobScheduler(
           jobName,
-          { pattern: config.cron, tz: "Asia/Ho_Chi_Minh" },
+          { pattern, tz: "Asia/Ho_Chi_Minh" },
           {
             name: jobName,
             data: {
-              jobName: jobName as CronJobName,
+              jobName,
               triggeredAt: new Date().toISOString(),
+              ...(params ? { params } : {}),
             },
           },
         );
@@ -113,21 +146,30 @@ export class CronQueueService {
   }
 
   /**
-   * Bật lịch trình cho một cron job cụ thể (upsert vào BullMQ scheduler)
+   * Bật hoặc cập nhật lịch trình cho một cron job cụ thể (upsert vào BullMQ scheduler)
    */
-  async enableJobScheduler(jobName: CronJobName): Promise<void> {
+  async enableJobScheduler(
+    jobName: CronJobName,
+    options?: { cron?: string; params?: Record<string, unknown> },
+  ): Promise<void> {
     if (!this.queue || !this.isRedisAvailable) return;
-    const config = DEFAULT_CRON_SCHEDULES[jobName];
-    if (!config) return;
+    const defaultConfig = DEFAULT_CRON_SCHEDULES[jobName];
+    if (!defaultConfig) return;
+    const pattern = options?.cron || defaultConfig.cron;
+    const params =
+      options?.params && Object.keys(options.params).length > 0
+        ? options.params
+        : undefined;
     try {
       await this.queue.upsertJobScheduler(
         jobName,
-        { pattern: config.cron, tz: "Asia/Ho_Chi_Minh" },
+        { pattern, tz: "Asia/Ho_Chi_Minh" },
         {
           name: jobName,
           data: {
             jobName,
             triggeredAt: new Date().toISOString(),
+            ...(params ? { params } : {}),
           },
         },
       );
