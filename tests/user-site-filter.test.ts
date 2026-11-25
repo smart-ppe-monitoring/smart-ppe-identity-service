@@ -1,6 +1,17 @@
-import { describe, it, beforeEach } from "node:test";
+import { describe, it, beforeEach, before, after } from "node:test";
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
+import type http from "node:http";
+import type { AddressInfo } from "node:net";
 import { Prisma } from "@prisma/client";
+import app from "../src/identity.app";
+import { prisma } from "../src/database/prisma.client";
+import { jwtKeyService } from "../src/common/services/jwt-key.service";
+import { envConfig } from "../src/config/env.config";
+import { GATEWAY_HEADERS } from "../src/common/constants/gateway.constant";
+import { JWT_PURPOSE } from "../src/common/constants/jwt.constant";
+import { PERMISSIONS } from "../src/common/constants/permission.constant";
+import { ERROR_CODE } from "../src/common/errors/error-code";
 import { findAllUserSchema } from "../src/modules/users/user.validation";
 import { UserRepository } from "../src/modules/users/user.repository";
 import { UserService } from "../src/modules/users/user.service";
@@ -445,6 +456,282 @@ describe("Issue #3: GET /api/v1/users siteId & excludeSiteId Filtering", () => {
       assert.strictEqual(itemProps.siteIds.type, "array");
       assert.strictEqual(itemProps.siteIds.items?.type, "string");
       assert.strictEqual(itemProps.siteIds.items?.format, "uuid");
+    });
+  });
+
+  describe("6. Live HTTP + PostgreSQL (ppe_identity_db) Integration Tests", () => {
+    let server: http.Server | null = null;
+    let baseUrl = "";
+    let dbAvailable = false;
+    let accessToken = "";
+    let createdTempRoleId: string | null = null;
+    const createdUserIds: string[] = [];
+    const liveSiteA = crypto.randomUUID();
+    const liveSiteB = crypto.randomUUID();
+    const searchToken = `sitefilter${crypto.randomBytes(4).toString("hex")}`;
+
+    let userSiteAOnlyId = "";
+    let userBothSitesId = "";
+    let userSiteBOnlyId = "";
+    let userUnassignedId = "";
+    let userDeletedInSiteAId = "";
+
+    async function requestJson(path: string) {
+      const headers: Record<string, string> = {
+        authorization: `Bearer ${accessToken}`,
+      };
+      if (envConfig.gateway.internalSecret) {
+        headers[GATEWAY_HEADERS.INTERNAL_SECRET] =
+          envConfig.gateway.internalSecret;
+      }
+      const res = await fetch(`${baseUrl}${path}`, { method: "GET", headers });
+      const text = await res.text();
+      return {
+        status: res.status,
+        body: text ? JSON.parse(text) : null,
+      };
+    }
+
+    before(async () => {
+      try {
+        await prisma.$queryRaw`SELECT 1`;
+        dbAvailable = true;
+      } catch {
+        dbAvailable = false;
+        return;
+      }
+
+      permissionCacheService.clear();
+
+      let adminRole = await prisma.role.findFirst({
+        where: { name: ROLES.ADMIN },
+      });
+      if (!adminRole) {
+        adminRole = await prisma.role.create({
+          data: {
+            name: ROLES.ADMIN,
+            description: "Temporary test admin role",
+            isSystem: true,
+          },
+        });
+        createdTempRoleId = adminRole.id;
+      }
+
+      const memberRole =
+        (await prisma.role.findFirst({
+          where: { name: { in: [ROLES.SAFETY_OFFICER, ROLES.USER] } },
+        })) || adminRole;
+
+      const suffix = crypto.randomBytes(4).toString("hex");
+      const adminCaller = await prisma.user.create({
+        data: {
+          email: `it-admin-${suffix}@smartppe.local`,
+          fullName: `Admin Caller ${suffix}`,
+          roleId: adminRole.id,
+          isActive: true,
+          deletedAt: null,
+          siteIds: [],
+        },
+      });
+      createdUserIds.push(adminCaller.id);
+
+      const uA = await prisma.user.create({
+        data: {
+          email: `it-sitea-${suffix}@smartppe.local`,
+          fullName: `Nguyen ${searchToken} Alpha`,
+          roleId: memberRole.id,
+          isActive: true,
+          deletedAt: null,
+          siteIds: [liveSiteA],
+        },
+      });
+      userSiteAOnlyId = uA.id;
+      createdUserIds.push(uA.id);
+
+      const uBoth = await prisma.user.create({
+        data: {
+          email: `it-both-${suffix}@smartppe.local`,
+          fullName: `Tran ${searchToken} Both`,
+          roleId: memberRole.id,
+          isActive: true,
+          deletedAt: null,
+          siteIds: [liveSiteA, liveSiteB],
+        },
+      });
+      userBothSitesId = uBoth.id;
+      createdUserIds.push(uBoth.id);
+
+      const uB = await prisma.user.create({
+        data: {
+          email: `it-siteb-${suffix}@smartppe.local`,
+          fullName: `Le ${searchToken} Beta`,
+          roleId: memberRole.id,
+          isActive: true,
+          deletedAt: null,
+          siteIds: [liveSiteB],
+        },
+      });
+      userSiteBOnlyId = uB.id;
+      createdUserIds.push(uB.id);
+
+      const uNone = await prisma.user.create({
+        data: {
+          email: `it-none-${suffix}@smartppe.local`,
+          fullName: `Pham ${searchToken} None`,
+          roleId: memberRole.id,
+          isActive: true,
+          deletedAt: null,
+          siteIds: [],
+        },
+      });
+      userUnassignedId = uNone.id;
+      createdUserIds.push(uNone.id);
+
+      const uDeleted = await prisma.user.create({
+        data: {
+          email: `it-deleted-${suffix}@smartppe.local`,
+          fullName: `Vo ${searchToken} Deleted`,
+          roleId: memberRole.id,
+          isActive: false,
+          deletedAt: new Date(),
+          siteIds: [liveSiteA],
+        },
+      });
+      userDeletedInSiteAId = uDeleted.id;
+      createdUserIds.push(uDeleted.id);
+
+      accessToken = jwtKeyService.signAccessToken({
+        id: adminCaller.id,
+        email: adminCaller.email!,
+        role: ROLES.ADMIN,
+        roleId: adminRole.id,
+        permissions: [PERMISSIONS.USER_READ],
+        purpose: JWT_PURPOSE.ACCESS,
+        mustChangePassword: false,
+      });
+
+      server = await new Promise<http.Server>((resolve) => {
+        const s = app.listen(0, "127.0.0.1", () => resolve(s));
+      });
+      const addr = server.address() as AddressInfo;
+      baseUrl = `http://127.0.0.1:${addr.port}`;
+    });
+
+    after(async () => {
+      if (createdUserIds.length > 0 && dbAvailable) {
+        await prisma.user
+          .deleteMany({ where: { id: { in: createdUserIds } } })
+          .catch(() => {});
+      }
+      if (createdTempRoleId && dbAvailable) {
+        await prisma.role
+          .deleteMany({ where: { id: createdTempRoleId } })
+          .catch(() => {});
+      }
+      permissionCacheService.clear();
+      if (server) {
+        await new Promise<void>((resolve) => {
+          server!.close(() => resolve());
+        });
+      }
+      await prisma.$disconnect().catch(() => {});
+    });
+
+    it("GET /api/v1/users?siteId=<uuid> should return only active non-deleted users assigned to siteA", async (t) => {
+      if (!dbAvailable) {
+        t.skip("PostgreSQL ppe_identity_db is unavailable");
+        return;
+      }
+
+      const res = await requestJson(`/api/v1/users?siteId=${liveSiteA}`);
+      assert.strictEqual(res.status, 200);
+      assert.strictEqual(res.body.success, true);
+
+      const ids = (res.body.data as any[]).map((u) => u.id).sort();
+      assert.deepStrictEqual(
+        ids,
+        [userSiteAOnlyId, userBothSitesId].sort(),
+      );
+      assert.strictEqual(res.body.meta?.total, 2);
+      assert.ok(!ids.includes(userSiteBOnlyId));
+      assert.ok(!ids.includes(userUnassignedId));
+      assert.ok(!ids.includes(userDeletedInSiteAId));
+    });
+
+    it("GET /api/v1/users?siteId=<siteA>&excludeSiteId=<siteB> should return only userSiteAOnly", async (t) => {
+      if (!dbAvailable) {
+        t.skip("PostgreSQL ppe_identity_db is unavailable");
+        return;
+      }
+
+      const res = await requestJson(
+        `/api/v1/users?siteId=${liveSiteA}&excludeSiteId=${liveSiteB}`,
+      );
+      assert.strictEqual(res.status, 200);
+      assert.strictEqual(res.body.meta?.total, 1);
+      assert.deepStrictEqual(
+        (res.body.data as any[]).map((u) => u.id),
+        [userSiteAOnlyId],
+      );
+    });
+
+    it("GET /api/v1/users?siteId=<siteA>&search=<token> should apply siteId filter in live PostgreSQL FTS and populate siteIds", async (t) => {
+      if (!dbAvailable) {
+        t.skip("PostgreSQL ppe_identity_db is unavailable");
+        return;
+      }
+
+      const res = await requestJson(
+        `/api/v1/users?siteId=${liveSiteA}&search=${searchToken}`,
+      );
+      assert.strictEqual(res.status, 200);
+      assert.strictEqual(res.body.meta?.total, 2);
+
+      const rows = res.body.data as any[];
+      const ids = rows.map((u) => u.id).sort();
+      assert.deepStrictEqual(
+        ids,
+        [userSiteAOnlyId, userBothSitesId].sort(),
+      );
+      for (const u of rows) {
+        assert.ok(Array.isArray(u.siteIds), "FTS row must include siteIds");
+        assert.ok(u.siteIds.includes(liveSiteA));
+      }
+    });
+
+    it("GET /api/v1/users?excludeSiteId=<siteA>&search=<token> should exclude siteA users in live PostgreSQL FTS", async (t) => {
+      if (!dbAvailable) {
+        t.skip("PostgreSQL ppe_identity_db is unavailable");
+        return;
+      }
+
+      const res = await requestJson(
+        `/api/v1/users?excludeSiteId=${liveSiteA}&search=${searchToken}`,
+      );
+      assert.strictEqual(res.status, 200);
+      assert.strictEqual(res.body.meta?.total, 2);
+
+      const rows = res.body.data as any[];
+      const ids = rows.map((u) => u.id).sort();
+      assert.deepStrictEqual(
+        ids,
+        [userSiteBOnlyId, userUnassignedId].sort(),
+      );
+      for (const u of rows) {
+        assert.ok(Array.isArray(u.siteIds), "FTS row must include siteIds");
+        assert.ok(!u.siteIds.includes(liveSiteA));
+      }
+    });
+
+    it("GET /api/v1/users?siteId=not-a-uuid should return 422 VALIDATION_ERROR", async (t) => {
+      if (!dbAvailable) {
+        t.skip("PostgreSQL ppe_identity_db is unavailable");
+        return;
+      }
+
+      const res = await requestJson("/api/v1/users?siteId=not-a-uuid");
+      assert.strictEqual(res.status, 422);
+      assert.strictEqual(res.body.code, ERROR_CODE.VALIDATION_ERROR);
     });
   });
 });
