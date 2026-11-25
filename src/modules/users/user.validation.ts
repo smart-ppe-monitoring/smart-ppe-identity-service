@@ -9,6 +9,16 @@ export const findAllUserSchema = z.object({
   email: z.string().optional(),
   fullName: z.string().optional(),
   roleName: z.string().optional(),
+  siteId: z
+    .string()
+    .uuid("ID công trường siteId phải là UUID hợp lệ")
+    .optional()
+    .describe("Lọc người dùng thuộc công trường theo siteId (UUID)"),
+  excludeSiteId: z
+    .string()
+    .uuid("ID công trường excludeSiteId phải là UUID hợp lệ")
+    .optional()
+    .describe("Loại trừ người dùng đã thuộc công trường theo excludeSiteId (UUID)"),
   isActive: z
     .enum(["true", "false"])
     .transform((v) => v === "true")

@@ -20,6 +20,8 @@ export function registerUserOpenApi(): void {
     path: "/users",
     tags: ["Users"],
     summary: "Danh sách người dùng (Phân trang, tìm kiếm & lọc)",
+    description:
+      "Lấy danh sách người dùng có hỗ trợ phân trang, tìm kiếm toàn văn và lọc theo siteId (nhân sự thuộc công trường) hoặc excludeSiteId (nhân sự chưa thuộc công trường).",
     security: [{ BearerAuth: [] }],
     request: {
       query: findAllUserSchema,
@@ -38,6 +40,7 @@ export function registerUserOpenApi(): void {
                   fullName: z.string().nullable(),
                   phoneNumber: z.string().nullable(),
                   avatarUrl: z.string().nullable(),
+                  siteIds: z.array(z.string().uuid()),
                   isActive: z.boolean(),
                   isEmailVerified: z.boolean(),
                   role: z.object({
@@ -59,6 +62,10 @@ export function registerUserOpenApi(): void {
         },
       },
       403: { description: "Không có quyền USER_READ" },
+      422: {
+        description:
+          "Tham số truy vấn không hợp lệ (ví dụ: siteId hoặc excludeSiteId không đúng định dạng UUID)",
+      },
     },
   });
 
@@ -85,6 +92,7 @@ export function registerUserOpenApi(): void {
                 fullName: z.string().nullable(),
                 phoneNumber: z.string().nullable(),
                 avatarUrl: z.string().nullable(),
+                siteIds: z.array(z.string().uuid()),
                 isActive: z.boolean(),
                 isEmailVerified: z.boolean(),
                 role: z.object({

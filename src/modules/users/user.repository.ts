@@ -86,6 +86,8 @@ export class UserRepository {
       email,
       fullName,
       roleName,
+      siteId,
+      excludeSiteId,
       isActive,
       isDeleted,
       sortBy = "createdAt",
@@ -111,6 +113,12 @@ export class UserRepository {
     }
     if (roleName) {
       conditions.push({ role: { name: roleName } });
+    }
+    if (siteId) {
+      conditions.push({ siteIds: { has: siteId } });
+    }
+    if (excludeSiteId) {
+      conditions.push({ NOT: { siteIds: { has: excludeSiteId } } });
     }
     if (search) {
       conditions.push({
@@ -140,15 +148,15 @@ export class UserRepository {
     };
     const orderBy = SORT_MAP[sortBy] ?? { createdAt: order };
 
-    const [data, total] = await prisma.$transaction([
-      prisma.user.findMany({
+    const [data, total] = await this.db.$transaction([
+      this.db.user.findMany({
         where,
         select: userSummarySelect,
         orderBy,
         skip,
         take,
       }),
-      prisma.user.count({ where }),
+      this.db.user.count({ where }),
     ]);
 
     return {
@@ -197,6 +205,18 @@ export class UserRepository {
       whereConditions.push(Prisma.sql`r.name = ${query.roleName}`);
     }
 
+    if (query.siteId) {
+      whereConditions.push(
+        Prisma.sql`u.site_ids @> ARRAY[${query.siteId}]::text[]`,
+      );
+    }
+
+    if (query.excludeSiteId) {
+      whereConditions.push(
+        Prisma.sql`NOT (coalesce(u.site_ids, ARRAY[]::text[]) @> ARRAY[${query.excludeSiteId}]::text[])`,
+      );
+    }
+
     if (query.email) {
       whereConditions.push(
         Prisma.sql`u.email ILIKE ${"%" + query.email + "%"}`,
@@ -211,8 +231,8 @@ export class UserRepository {
 
     const whereClause = Prisma.sql`WHERE ${Prisma.join(whereConditions, " AND ")}`;
 
-    const [rawUsers, countResult] = await prisma.$transaction([
-      prisma.$queryRaw<
+    const [rawUsers, countResult] = await this.db.$transaction([
+      this.db.$queryRaw<
         Array<{
           id: string;
           email: string | null;
@@ -221,6 +241,7 @@ export class UserRepository {
           phone_number: string | null;
           role_id: string;
           role_name: string;
+          site_ids: string[] | null;
           is_active: boolean;
           two_factor_enabled: boolean;
           must_change_password: boolean;
@@ -234,7 +255,7 @@ export class UserRepository {
       >`
         SELECT
           u.id, u.email, u.full_name, u.avatar_url, u.phone_number,
-          u.role_id, r.name as role_name, u.is_active, u.two_factor_enabled,
+          u.role_id, r.name as role_name, u.site_ids, u.is_active, u.two_factor_enabled,
           u.must_change_password, u.failed_login_attempts, u.locked_until,
           u.deleted_at, u.created_at, u.updated_at,
           ts_rank(to_tsvector('simple', coalesce(u.full_name, '') || ' ' || coalesce(u.email, '') || ' ' || coalesce(u.phone_number, '')), to_tsquery('simple', ${tsQuery})) as rank
@@ -245,7 +266,7 @@ export class UserRepository {
         OFFSET ${skip}
         LIMIT ${take}
       `,
-      prisma.$queryRaw<Array<{ count: bigint }>>`
+      this.db.$queryRaw<Array<{ count: bigint }>>`
         SELECT COUNT(*)::bigint as count
         FROM users u
         LEFT JOIN roles r ON u.role_id = r.id
@@ -262,6 +283,7 @@ export class UserRepository {
       phoneNumber: u.phone_number,
       roleId: u.role_id,
       role: { id: u.role_id, name: u.role_name },
+      siteIds: Array.isArray(u.site_ids) ? u.site_ids : [],
       isActive: u.is_active,
       twoFactorEnabled: u.two_factor_enabled,
       mustChangePassword: u.must_change_password,

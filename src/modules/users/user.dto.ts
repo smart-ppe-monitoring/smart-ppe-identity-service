@@ -3,6 +3,8 @@ export interface UserQueryDto {
   email?: string;
   fullName?: string;
   roleName?: string;
+  siteId?: string;
+  excludeSiteId?: string;
   isActive?: boolean;
   isDeleted?: boolean;
   sortBy?: "createdAt" | "email" | "fullName";
