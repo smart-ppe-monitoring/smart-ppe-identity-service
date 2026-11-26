@@ -5,6 +5,7 @@ import { AuthRepository } from "../auth.repository";
 import { AppError } from "../../../common/errors/app-error";
 import { ERROR_CODE } from "../../../common/errors/error-code";
 import { jwtConfig } from "../../../config/jwt.config";
+import { envConfig } from "../../../config/env.config";
 import { jwtKeyService } from "../../../common/services/jwt-key.service";
 import { JWT_PURPOSE } from "../../../common/constants/jwt.constant";
 import {
@@ -69,9 +70,9 @@ export class Auth2FAService {
       encryptSecret(pendingPayload),
     );
 
-    const appName = "TemplateBE";
+    const issuer = envConfig.twoFactor.issuer;
     const otpauthUrl = generateOtpauthUri({
-      issuer: appName,
+      issuer,
       accountName: user.email || user.id,
       secret,
     });

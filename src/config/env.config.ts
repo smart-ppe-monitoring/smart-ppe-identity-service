@@ -1,5 +1,6 @@
 import "dotenv/config";
 import { z } from "zod";
+import { DEFAULT_TWO_FACTOR_ISSUER } from "../common/constants/auth.constant";
 
 const envSchema = z
   .object({
@@ -8,6 +9,8 @@ const envSchema = z
       .enum(["development", "production", "test"])
       .default("development"),
     PORT: z.coerce.number().int().positive().default(9999),
+    APP_NAME: z.string().default(DEFAULT_TWO_FACTOR_ISSUER),
+    TWO_FACTOR_ISSUER: z.string().default(""),
 
     // ── Database (Database-per-Service Architecture) ─────────────────────────
     IDENTITY_DATABASE_URL: z
@@ -391,6 +394,13 @@ function resolveRedisConfig() {
 export const envConfig = {
   nodeEnv: _env.NODE_ENV,
   port: _env.PORT,
+  appName: _env.APP_NAME.trim() || DEFAULT_TWO_FACTOR_ISSUER,
+  twoFactor: {
+    issuer:
+      _env.TWO_FACTOR_ISSUER.trim() ||
+      _env.APP_NAME.trim() ||
+      DEFAULT_TWO_FACTOR_ISSUER,
+  },
   database: {
     url: _env.IDENTITY_DATABASE_URL,
     siteUrl: _env.SITE_DATABASE_URL,

@@ -690,7 +690,7 @@ export function registerAuthOpenApi(): void {
                 secret: z.string().openapi({ example: "JBSWY3DPEHPK3PXP..." }),
                 otpauthUrl: z.string().openapi({
                   example:
-                    "otpauth://totp/TemplateBE:user@example.com?secret=...",
+                    "otpauth://totp/Smart%20PPE%20Monitoring:user%40example.com?secret=...",
                 }),
               }),
             }),

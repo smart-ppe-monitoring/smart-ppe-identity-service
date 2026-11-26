@@ -195,6 +195,9 @@ router.post(
 router.get(
   "/google/url",
   authRateLimitMiddleware,
+  requireFeatureFlag(FEATURE_FLAGS.SOCIAL_LOGIN_ENABLED, {
+    message: "Tính năng đăng nhập qua Google hiện đang tạm khóa bởi quản trị viên",
+  }),
   validate(googleAuthUrlQuerySchema, "query"),
   controller.getGoogleAuthUrl,
 );
@@ -214,6 +217,9 @@ router.post(
   "/social/link",
   authMiddleware,
   authRateLimitMiddleware,
+  requireFeatureFlag(FEATURE_FLAGS.SOCIAL_LOGIN_ENABLED, {
+    message: "Tính năng liên kết tài khoản mạng xã hội hiện đang tạm khóa bởi quản trị viên",
+  }),
   validate(linkSocialAccountSchema),
   controller.linkSocialAccount,
 );

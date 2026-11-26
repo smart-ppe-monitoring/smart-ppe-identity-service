@@ -61,10 +61,12 @@ export const updateProfileSchema = z.object({
     .optional(),
   phoneNumber: z
     .string()
-    .regex(
-      /^[0-9]{10,11}$/,
+    .trim()
+    .refine(
+      (val) => val === "" || /^[0-9]{10,11}$/.test(val),
       "Invalid phone number format (must be 10-11 digits)",
     )
+    .nullable()
     .optional(),
 });
 

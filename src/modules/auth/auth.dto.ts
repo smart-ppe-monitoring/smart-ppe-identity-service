@@ -52,7 +52,7 @@ export interface LoginResponseDto {
 export interface UpdateProfileDto {
   fullName?: string;
   avatarUrl?: string;
-  phoneNumber?: string;
+  phoneNumber?: string | null;
 }
 
 export interface UpdatePasswordDto {

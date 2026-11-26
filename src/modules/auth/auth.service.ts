@@ -1048,24 +1048,32 @@ export class AuthService {
       throw new AppError("User not found", 404, ERROR_CODE.NOT_FOUND);
     }
 
-    if (data.phoneNumber) {
-      const existingPhone = await this.repository.findByPhone(data.phoneNumber);
-      if (existingPhone && existingPhone.id !== userId) {
-        throw new AppError(
-          "Phone number already exists",
-          400,
-          ERROR_CODE.DUPLICATE_ENTRY,
-        );
+    const updatePayload: UpdateProfileDto = { ...data };
+
+    if (data.phoneNumber !== undefined) {
+      const normalizedPhone =
+        data.phoneNumber === null ? null : data.phoneNumber.trim() || null;
+      updatePayload.phoneNumber = normalizedPhone;
+
+      if (normalizedPhone) {
+        const existingPhone = await this.repository.findByPhone(normalizedPhone);
+        if (existingPhone && existingPhone.id !== userId) {
+          throw new AppError(
+            "Phone number already exists",
+            400,
+            ERROR_CODE.DUPLICATE_ENTRY,
+          );
+        }
       }
     }
 
     // SEC-09 Fix: Nếu người dùng cập nhật avatarUrl trỏ tới R2 bucket của hệ thống,
     // bắt buộc URL phải trỏ tới thư mục của chính user (avatars/${userId}/).
     // Tuyệt đối không cho phép gán avatarUrl trỏ tới tệp của người dùng khác.
-    if (data.avatarUrl) {
+    if (updatePayload.avatarUrl) {
       const base = r2Config.publicBaseUrl.replace(/\/$/, "");
-      if (data.avatarUrl.startsWith(base)) {
-        const key = data.avatarUrl.slice(base.length + 1);
+      if (updatePayload.avatarUrl.startsWith(base)) {
+        const key = updatePayload.avatarUrl.slice(base.length + 1);
         const expectedPrefix = `avatars/${userId}/`;
         if (!key.startsWith(expectedPrefix)) {
           throw new AppError(
@@ -1077,7 +1085,7 @@ export class AuthService {
       }
     }
 
-    await this.repository.updateProfile(userId, data);
+    await this.repository.updateProfile(userId, updatePayload);
 
     notificationDispatcher
       .notify(
@@ -1379,8 +1387,12 @@ export class AuthService {
     await this.repository.deleteSessionById(userId, sessionId);
   }
 
-  async revokeAllOtherSessions(userId: string, currentToken: string) {
-    await this.repository.deleteOtherSessions(userId, currentToken);
+  async revokeAllOtherSessions(userId: string, currentToken?: string) {
+    const normalizedToken =
+      typeof currentToken === "string" && currentToken.trim().length > 0
+        ? currentToken.trim()
+        : undefined;
+    await this.repository.revokeOtherSessions(userId, normalizedToken);
   }
 
   /**

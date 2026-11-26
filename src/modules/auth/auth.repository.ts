@@ -292,7 +292,7 @@ export class AuthRepository {
 
   async updateProfile(
     userId: string,
-    data: { fullName?: string; avatarUrl?: string; phoneNumber?: string },
+    data: { fullName?: string; avatarUrl?: string; phoneNumber?: string | null },
   ) {
     return prisma.user.update({
       where: { id: userId },
@@ -436,7 +436,10 @@ export class AuthRepository {
 
   async findSessionsByUserId(userId: string) {
     return prisma.refreshToken.findMany({
-      where: { userId },
+      where: {
+        userId,
+        expiresAt: { gt: new Date() },
+      },
       orderBy: { createdAt: "desc" },
     });
   }
@@ -599,16 +602,8 @@ export class AuthRepository {
     });
   }
 
-  async deleteOtherSessions(userId: string, currentToken: string) {
-    const hashedCurrentToken = hashToken(currentToken);
-    return prisma.refreshToken.deleteMany({
-      where: {
-        userId,
-        NOT: {
-          token: hashedCurrentToken,
-        },
-      },
-    });
+  async deleteOtherSessions(userId: string, currentToken?: string) {
+    return this.revokeOtherSessions(userId, currentToken);
   }
 
   /**
@@ -852,8 +847,11 @@ export class AuthRepository {
   }
 
   async revokeOtherSessions(userId: string, currentRefreshToken?: string) {
-    if (currentRefreshToken) {
-      const hashedCurrentToken = hashToken(currentRefreshToken);
+    const trimmed =
+      typeof currentRefreshToken === "string" ? currentRefreshToken.trim() : "";
+
+    if (trimmed) {
+      const hashedCurrentToken = hashToken(trimmed);
       return prisma.refreshToken.deleteMany({
         where: {
           userId,
@@ -865,7 +863,10 @@ export class AuthRepository {
     }
 
     const latestSession = await prisma.refreshToken.findFirst({
-      where: { userId },
+      where: {
+        userId,
+        expiresAt: { gt: new Date() },
+      },
       orderBy: { createdAt: "desc" },
       select: { id: true },
     });

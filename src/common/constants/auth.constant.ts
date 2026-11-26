@@ -12,3 +12,5 @@ export type AuthProvider = keyof typeof AUTH_PROVIDER;
  * KHÔNG sử dụng trong production (fail-fast env validation sẽ chặn trước).
  */
 export const GOOGLE_OAUTH_DEFAULT_DEV_REDIRECT_URI = "http://localhost:5173/auth/callback" as const;
+
+export const DEFAULT_TWO_FACTOR_ISSUER = "Smart PPE Monitoring" as const;

@@ -43,6 +43,17 @@ export class AuthController {
     this.service = service || new AuthService();
   }
 
+  private clearAuthCookies(res: Response): void {
+    const cookieOptions = {
+      httpOnly: true,
+      secure: envConfig.nodeEnv === "production",
+      sameSite: "lax" as const,
+      path: "/",
+    };
+    res.clearCookie("accessToken", cookieOptions);
+    res.clearCookie("refreshToken", cookieOptions);
+  }
+
   login = async (req: Request, res: Response, next: NextFunction) => {
     try {
       const body = req.body as LoginDto;
@@ -105,7 +116,7 @@ export class AuthController {
 
   refresh = async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const refreshToken = (req.body.refreshToken ||
+      const refreshToken = (req.body?.refreshToken ||
         req.cookies?.refreshToken) as string;
 
       const userAgent = req.headers["user-agent"];
@@ -145,19 +156,12 @@ export class AuthController {
 
   logout = async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const refreshToken = req.cookies?.refreshToken || req.body.refreshToken;
+      const refreshToken = req.cookies?.refreshToken || req.body?.refreshToken;
       if (refreshToken) {
         await this.service.logout(refreshToken);
       }
 
-      const cookieOptions = {
-        httpOnly: true,
-        secure: envConfig.nodeEnv === "production",
-        sameSite: "lax" as const,
-        path: "/",
-      };
-      res.clearCookie("accessToken", cookieOptions);
-      res.clearCookie("refreshToken", cookieOptions);
+      this.clearAuthCookies(res);
 
       res.json({
         success: true,
@@ -215,6 +219,8 @@ export class AuthController {
     try {
       const body = req.body as UpdatePasswordDto;
       await this.service.updatePassword(req.user.id, body);
+
+      this.clearAuthCookies(res);
 
       res.json({
         success: true,
@@ -276,7 +282,10 @@ export class AuthController {
 
   getSessions = async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const currentToken = req.cookies?.refreshToken || req.body.refreshToken;
+      const currentToken =
+        req.cookies?.refreshToken ||
+        (req.headers["x-refresh-token"] as string | undefined) ||
+        req.body?.refreshToken;
       const result = await this.service.getActiveSessions(
         req.user.id,
         currentToken,
@@ -309,7 +318,10 @@ export class AuthController {
     next: NextFunction,
   ) => {
     try {
-      const currentToken = req.body?.refreshToken || req.cookies?.refreshToken;
+      const currentToken =
+        req.body?.refreshToken ||
+        req.cookies?.refreshToken ||
+        (req.headers["x-refresh-token"] as string | undefined);
       await this.service.revokeAllOtherSessions(req.user.id, currentToken);
       res.json({
         success: true,
@@ -402,14 +414,7 @@ export class AuthController {
       await this.service.confirmDeactivate(body, { ipAddress, userAgent });
 
       // Xóa cookies xác thực nếu có với options đồng nhất
-      const cookieOptions = {
-        httpOnly: true,
-        secure: envConfig.nodeEnv === "production",
-        sameSite: "lax" as const,
-        path: "/",
-      };
-      res.clearCookie("accessToken", cookieOptions);
-      res.clearCookie("refreshToken", cookieOptions);
+      this.clearAuthCookies(res);
 
       res.json({
         success: true,

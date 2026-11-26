@@ -10,6 +10,7 @@ import { AUDIT_ACTION } from "../src/common/constants/audit-log.constant";
 import { ERROR_CODE } from "../src/common/errors/error-code";
 import { AppError } from "../src/common/errors/app-error";
 import { jwtConfig } from "../src/config/jwt.config";
+import { envConfig } from "../src/config/env.config";
 import { jwtKeyService } from "../src/common/services/jwt-key.service";
 import {
   generateTotpSecret,
@@ -247,9 +248,12 @@ describe("Two-Factor Authentication (2FA / TOTP) Test Suite", () => {
   describe("2. Setup & Enable 2FA Flow", () => {
     it("setup2FA should return a Base32 secret and otpauthUrl", async () => {
       const result = await authService.setup2FA(mockUser.id);
+      const expectedIssuer = encodeURIComponent(envConfig.twoFactor.issuer);
       assert.equal(typeof result.secret, "string");
       assert.ok(result.secret.length >= 16);
-      assert.ok(result.otpauthUrl.startsWith("otpauth://totp/TemplateBE:"));
+      assert.ok(result.otpauthUrl.startsWith(`otpauth://totp/${expectedIssuer}:`));
+      assert.ok(result.otpauthUrl.includes(`issuer=${expectedIssuer}`));
+      assert.ok(!result.otpauthUrl.includes("TemplateBE"));
     });
 
     it("setup2FA should reject if 2FA is already enabled", async () => {
