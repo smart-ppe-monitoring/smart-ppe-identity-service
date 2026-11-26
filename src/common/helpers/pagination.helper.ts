@@ -13,6 +13,7 @@ export function calculatePaginationSkip(
   pageInput?: number,
   limitInput?: number,
   defaultLimit = DEFAULT_LIMIT,
+  maxLimit = MAX_PAGINATION_LIMIT,
 ): {
   skip: number;
   take: number;
@@ -21,7 +22,7 @@ export function calculatePaginationSkip(
 } {
   const page = Math.max(1, Math.floor(Number(pageInput) || DEFAULT_PAGE));
   const rawLimit = Math.floor(Number(limitInput) || defaultLimit);
-  const limit = Math.min(MAX_PAGINATION_LIMIT, Math.max(1, rawLimit));
+  const limit = Math.min(maxLimit, Math.max(1, rawLimit));
   const skip = (page - 1) * limit;
 
   return { skip, take: limit, page, limit };
@@ -34,12 +35,10 @@ export function formatPaginationMeta(
   page: number,
   limit: number,
   total: number,
+  maxLimit = MAX_PAGINATION_LIMIT,
 ): PaginationMeta {
   const safePage = Math.max(1, page || DEFAULT_PAGE);
-  const safeLimit = Math.min(
-    MAX_PAGINATION_LIMIT,
-    Math.max(1, limit || DEFAULT_LIMIT),
-  );
+  const safeLimit = Math.min(maxLimit, Math.max(1, limit || DEFAULT_LIMIT));
   return {
     page: safePage,
     limit: safeLimit,

@@ -3,6 +3,7 @@ import {
   VIETNAM_DATE_REGEX,
   ISO_DATE_REGEX,
 } from "../../common/constants/date.constant";
+import { MAX_PERMISSION_LIST_LIMIT } from "../../common/constants/permission.constant";
 
 export const createRoleSchema = z.object({
   name: z
@@ -35,7 +36,10 @@ export const updateRoleSchema = z.object({
 export const assignPermissionsSchema = z.object({
   permissionIds: z
     .array(z.string().uuid("Permission ID không hợp lệ"))
-    .min(1, "Cần ít nhất một permission ID"),
+    .min(0)
+    .describe(
+      "Danh sách permission ID cần đồng bộ cho vai trò (cho phép mảng rỗng [] đối với Custom Role để gỡ toàn bộ quyền)",
+    ),
 });
 
 export const assignUserRoleSchema = z.object({
@@ -105,7 +109,18 @@ export const auditLogQuerySchema = z.object({
 
 export const permissionQuerySchema = z.object({
   page: z.coerce.number().int().positive().optional(),
-  limit: z.coerce.number().int().positive().max(100).optional(),
+  limit: z.coerce
+    .number()
+    .int()
+    .positive()
+    .max(
+      MAX_PERMISSION_LIST_LIMIT,
+      `Số lượng bản ghi tối đa mỗi trang là ${MAX_PERMISSION_LIST_LIMIT}`,
+    )
+    .optional()
+    .describe(
+      `Số lượng bản ghi mỗi trang (tối đa ${MAX_PERMISSION_LIST_LIMIT}; bỏ qua page và limit để lấy toàn bộ danh mục quyền)`,
+    ),
   resource: z
     .string()
     .max(50, "Resource tối đa 50 ký tự")

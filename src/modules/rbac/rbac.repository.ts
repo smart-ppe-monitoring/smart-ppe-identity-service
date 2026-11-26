@@ -14,8 +14,15 @@ import {
   formatPaginationMeta,
 } from "../../common/helpers/pagination.helper";
 import { buildTsQuery } from "../../common/helpers/fts.helper";
+import { MAX_PERMISSION_LIST_LIMIT } from "../../common/constants/permission.constant";
 
 export class RbacRepository {
+  private readonly db: typeof prisma;
+
+  constructor(dbClient?: typeof prisma) {
+    this.db = dbClient || prisma;
+  }
+
   async findAllRoles(query: RoleQueryDto = {}) {
     const {
       search,
@@ -169,25 +176,34 @@ export class RbacRepository {
         take,
         page: safePage,
         limit: safeLimit,
-      } = calculatePaginationSkip(query.page, query.limit, 50);
-      const [data, total] = await prisma.$transaction([
-        prisma.permission.findMany({
+      } = calculatePaginationSkip(
+        query.page,
+        query.limit,
+        50,
+        MAX_PERMISSION_LIST_LIMIT,
+      );
+      const [data, total] = await this.db.$transaction([
+        this.db.permission.findMany({
           where,
           orderBy: [{ resource: "asc" }, { action: "asc" }],
           skip,
           take,
         }),
-        prisma.permission.count({ where }),
+        this.db.permission.count({ where }),
       ]);
       return {
         data,
-        meta: formatPaginationMeta(safePage, safeLimit, total),
+        meta: formatPaginationMeta(
+          safePage,
+          safeLimit,
+          total,
+          MAX_PERMISSION_LIST_LIMIT,
+        ),
       };
     }
 
-    return prisma.permission.findMany({
+    return this.db.permission.findMany({
       where,
-      take: 100,
       orderBy: [{ resource: "asc" }, { action: "asc" }],
     });
   }
@@ -205,7 +221,7 @@ export class RbacRepository {
   }
 
   async syncRolePermissions(roleId: string, permissionIds: string[]) {
-    return prisma.$transaction(async (tx) => {
+    return this.db.$transaction(async (tx) => {
       await tx.rolePermission.deleteMany({
         where: { roleId },
       });

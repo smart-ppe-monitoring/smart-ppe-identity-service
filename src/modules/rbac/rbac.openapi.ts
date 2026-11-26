@@ -11,6 +11,7 @@ import {
   permissionQuerySchema,
 } from "./rbac.validation";
 import { userIdParamSchema } from "../users/user.validation";
+import { MAX_PERMISSION_LIST_LIMIT } from "../../common/constants/permission.constant";
 import { z } from "zod";
 
 export function registerRbacOpenApi(): void {
@@ -202,6 +203,7 @@ export function registerRbacOpenApi(): void {
     path: "/rbac/permissions",
     tags: ["RBAC"],
     summary: "Danh sách toàn bộ các quyền (Permissions) trong hệ thống",
+    description: `Trả về toàn bộ danh mục quyền hiện hành khi không truyền page/limit, hoặc trả về theo trang với limit tối đa ${MAX_PERMISSION_LIST_LIMIT}.`,
     security: [{ BearerAuth: [] }],
     request: { query: permissionQuerySchema },
     responses: {
@@ -220,6 +222,14 @@ export function registerRbacOpenApi(): void {
                   resource: z.string(),
                 }),
               ),
+              meta: z
+                .object({
+                  total: z.number(),
+                  page: z.number(),
+                  limit: z.number(),
+                  totalPages: z.number(),
+                })
+                .optional(),
             }),
           },
         },
@@ -263,6 +273,8 @@ export function registerRbacOpenApi(): void {
     path: "/rbac/roles/{id}/permissions",
     tags: ["RBAC"],
     summary: "Đồng bộ toàn bộ danh sách quyền cho vai trò (Gán / Hủy quyền)",
+    description:
+      "Đồng bộ danh sách quyền cho vai trò. Hỗ trợ truyền mảng rỗng `permissionIds: []` đối với Custom Role để gỡ toàn bộ quyền; vai trò `ADMIN` vẫn bắt buộc giữ quyền cốt lõi `ROLE_PERMISSION_ASSIGN`.",
     security: [{ BearerAuth: [] }],
     request: {
       params: roleIdParamSchema,
@@ -277,14 +289,31 @@ export function registerRbacOpenApi(): void {
           "application/json": {
             schema: z.object({
               success: z.boolean().openapi({ example: true }),
-              message: z
-                .string()
-                .openapi({ example: "Đồng bộ quyền cho vai trò thành công" }),
+              data: z.object({
+                id: z.string().uuid(),
+                name: z.string(),
+                description: z.string().nullable(),
+                isSystem: z.boolean(),
+                permissions: z.array(
+                  z.object({
+                    id: z.string().uuid(),
+                    name: z.string(),
+                    description: z.string().nullable(),
+                    action: z.string(),
+                    resource: z.string(),
+                  }),
+                ),
+              }),
             }),
           },
         },
       },
+      400: {
+        description:
+          "Vi phạm bảo vệ Anti-lockout trên ADMIN (không thể gỡ ROLE_PERMISSION_ASSIGN hoặc truyền rỗng) hoặc dữ liệu không hợp lệ",
+      },
       403: { description: "Không thể tước quyền quản trị tối cao khỏi ADMIN" },
+      422: { description: "Dữ liệu đầu vào không hợp lệ (Validation Error)" },
     },
   });
 

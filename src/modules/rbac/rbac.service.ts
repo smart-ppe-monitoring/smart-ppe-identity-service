@@ -239,7 +239,9 @@ export class RbacService {
     const role = await this.findRoleById(roleId);
 
     const validPermissions =
-      await this.repository.findPermissionsByIds(permissionIds);
+      permissionIds.length > 0
+        ? await this.repository.findPermissionsByIds(permissionIds)
+        : [];
     if (validPermissions.length !== permissionIds.length) {
       throw new AppError(
         "One or more permission IDs are invalid",
@@ -306,7 +308,10 @@ export class RbacService {
     // Anti-lockout protection: ADMIN role must retain ROLE_PERMISSION_ASSIGN
     if (role.name === ROLES.ADMIN) {
       const assignPermId = await this.getRolePermissionAssignId();
-      if (assignPermId && !permissionIds.includes(assignPermId)) {
+      if (
+        permissionIds.length === 0 ||
+        (assignPermId && !permissionIds.includes(assignPermId))
+      ) {
         throw new AppError(
           "Security Violation: Cannot revoke ROLE_PERMISSION_ASSIGN permission from the ADMIN role.",
           400,

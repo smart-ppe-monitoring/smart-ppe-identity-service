@@ -92,6 +92,8 @@ export const PERMISSIONS = {
 
 export type PermissionKey = keyof typeof PERMISSIONS;
 
+export const MAX_PERMISSION_LIST_LIMIT = 500;
+
 export const PERMISSION_PUBSUB_CHANNEL = "permission:events";
 
 export const PERMISSION_PUBSUB_ACTION = {
