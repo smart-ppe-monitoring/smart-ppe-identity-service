@@ -20,9 +20,9 @@ export function registerAuditOpenApi(): void {
     method: "get",
     path: "/audit-logs",
     tags: ["Audit Logs"],
-    summary: "Tra cứu danh sách nhật ký kiểm toán toàn hệ thống",
+    summary: "Tra cứu danh sách nhật ký kiểm toán Identity Service",
     description:
-      "Hỗ trợ phân trang, lọc theo danh mục, người thực hiện, hành động, tài nguyên, khoảng thời gian và Full-Text Search.",
+      "Phạm vi Database-per-Service: lưu trữ nhật ký thuộc Identity, Auth, RBAC, Maintenance, Cron, Integration và System Config (`ppe_identity_db`). Hỗ trợ phân trang, lọc theo danh mục, trạng thái (`SUCCESS` | `FAILED`), người thực hiện, hành động, tài nguyên, khoảng thời gian và Full-Text Search.",
     security: [{ BearerAuth: [] }],
     request: { query: auditLogQuerySchema },
     responses: {
@@ -53,9 +53,9 @@ export function registerAuditOpenApi(): void {
     method: "get",
     path: "/audit-logs/config-changes",
     tags: ["Audit Logs"],
-    summary: "Lọc nhanh nhật ký thay đổi cấu hình hệ thống & an toàn PPE (Task BE-11)",
+    summary: "Lọc nhanh nhật ký thay đổi cấu hình hệ thống & Feature Flags",
     description:
-      "Lọc các thao tác: Cấu hình an toàn AI, cấu hình camera, cấu hình công trường, cờ tính năng và hệ thống.",
+      "Lọc các thao tác thay đổi cấu hình hệ thống (`SYSTEM_CONFIG`, `FEATURE_FLAG`, v.v.) trong phạm vi `smart-ppe-identity-service`. Hỗ trợ lọc `status` (`SUCCESS` | `FAILED`), khoảng thời gian và Full-Text Search.",
     security: [{ BearerAuth: [] }],
     request: { query: auditLogQuerySchema },
     responses: {
@@ -74,14 +74,15 @@ export function registerAuditOpenApi(): void {
     },
   });
 
-  // 3. Lọc nhanh duyệt & xử lý sự cố vi phạm
+  // 3. Lọc nhanh duyệt & xử lý sự cố vi phạm (DEPRECATED)
   openapiRegistry.registerPath({
     method: "get",
     path: "/audit-logs/incident-reviews",
     tags: ["Audit Logs"],
-    summary: "Lọc nhanh nhật ký duyệt sự cố vi phạm an toàn PPE (Task BE-11)",
+    deprecated: true,
+    summary: "[DEPRECATED] Lọc nhanh nhật ký duyệt sự cố vi phạm PPE",
     description:
-      "Lọc các thao tác review vi phạm của Safety Officer: Xác nhận vi phạm, báo động giả, giải quyết và đóng sự cố.",
+      "DEPRECATED: Theo ranh giới Database-per-Service, `smart-ppe-identity-service` chỉ lưu trữ audit log thuộc Identity, RBAC, Auth và System Config. Nhật ký xử lý sự cố PPE thuộc phạm vi `smart-ppe-incident-service`. Endpoint giữ lại để tương thích ngược và trả kèm header `Deprecation: true`.",
     security: [{ BearerAuth: [] }],
     request: { query: auditLogQuerySchema },
     responses: {
@@ -105,9 +106,9 @@ export function registerAuditOpenApi(): void {
     method: "get",
     path: "/audit-logs/summary",
     tags: ["Audit Logs"],
-    summary: "Thống kê KPI tổng quan hoạt động kiểm toán",
+    summary: "Thống kê KPI tổng quan hoạt động kiểm toán (Identity Scope)",
     description:
-      "Tổng số lượng logs, số lượt review incident, số lần đổi config, top actors và top actions.",
+      "Trả về `scope: \"IDENTITY\"`, tổng số logs, `successCount`, `failedCount`, `successRate`, thống kê theo danh mục (`categoryCounts.incidentReview` được giữ lại để tương thích ngược và đánh dấu deprecated do ranh giới Database-per-Service), top actors và top actions.",
     security: [{ BearerAuth: [] }],
     request: { query: auditSummaryQuerySchema },
     responses: {
@@ -132,7 +133,7 @@ export function registerAuditOpenApi(): void {
     tags: ["Audit Logs"],
     summary: "Xuất file báo cáo nhật ký kiểm toán (CSV / JSON)",
     description:
-      "Xuất dữ liệu kiểm toán phục vụ biên bản pháp lý, thanh tra an toàn và lưu trữ chống chối bỏ.",
+      "Xuất dữ liệu kiểm toán phục vụ biên bản pháp lý, thanh tra an toàn và lưu trữ chống chối bỏ. Hỗ trợ lọc `status` (`SUCCESS` | `FAILED`) và validate định dạng ngày cũng như ràng buộc `endDate >= startDate`.",
     security: [{ BearerAuth: [] }],
     request: { query: exportAuditLogSchema },
     responses: {
@@ -161,7 +162,7 @@ export function registerAuditOpenApi(): void {
     tags: ["Audit Logs"],
     summary: "Lấy toàn bộ timeline lịch sử kiểm toán của một tài nguyên cụ thể",
     description:
-      "Xem toàn bộ lịch sử can thiệp, cập nhật trạng thái của 1 sự cố vi phạm hoặc 1 camera.",
+      "Xem toàn bộ lịch sử thay đổi và trạng thái (`SUCCESS` | `FAILED`) của một tài nguyên thuộc phạm vi Identity Service (`USER`, `ROLE`, `SYSTEM_CONFIG`, `CRON_JOB`, `API_KEY`, `WEBHOOK_ENDPOINT`, ...).",
     security: [{ BearerAuth: [] }],
     request: {
       params: auditLogResourceParamSchema,

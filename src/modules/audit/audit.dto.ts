@@ -2,6 +2,8 @@ import {
   AuditAction,
   AuditCategory,
   AuditExportFormat,
+  AuditLogStatus,
+  AuditScope,
   AuditTargetType,
 } from "./audit.constant";
 
@@ -26,6 +28,7 @@ export interface AuditLogItemDto {
   actorId: string | null;
   actor: AuditLogActorDto | null;
   action: string;
+  status: AuditLogStatus;
   targetType: string;
   targetId: string;
   details: Record<string, unknown> | null;
@@ -38,6 +41,7 @@ export interface AuditLogQueryDto {
   category?: AuditCategory;
   actorId?: string;
   action?: string;
+  status?: AuditLogStatus;
   targetType?: string;
   targetId?: string;
   search?: string;
@@ -50,9 +54,16 @@ export interface AuditLogQueryDto {
 }
 
 export interface AuditLogSummaryDto {
+  scope: AuditScope;
   totalLogs: number;
+  successCount: number;
+  failedCount: number;
+  successRate: number | null;
   categoryCounts: {
     config: number;
+    /**
+     * @deprecated Incident review logs belong to `smart-ppe-incident-service` under Database-per-Service isolation.
+     */
     incidentReview: number;
     accessControl: number;
     system: number;

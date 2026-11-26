@@ -38,6 +38,10 @@ export class AuditService {
     return this.listLogs(enrichedQuery);
   }
 
+  /**
+   * @deprecated Endpoint & category thuộc phạm vi `smart-ppe-incident-service` theo Database-per-Service.
+   * Giữ lại để tương thích ngược; `smart-ppe-identity-service` chỉ lưu trữ audit log Identity/RBAC/Auth/System Config.
+   */
   // ── 3. Lọc nhanh các thao tác Review Sự cố (Incident Reviews) ──────────────
   async getIncidentReviews(query: AuditLogQueryDto) {
     const enrichedQuery: AuditLogQueryDto = {
@@ -129,6 +133,7 @@ export class AuditService {
       "ID",
       "Thời gian",
       "Hành động",
+      "Trạng thái",
       "Loại tài nguyên",
       "Mã tài nguyên",
       "Mã người dùng",
@@ -155,6 +160,7 @@ export class AuditService {
       escapeCsvField(log.id),
       escapeCsvField(log.createdAt),
       escapeCsvField(log.action),
+      escapeCsvField(log.status),
       escapeCsvField(log.targetType),
       escapeCsvField(log.targetId),
       escapeCsvField(log.actorId || "N/A"),

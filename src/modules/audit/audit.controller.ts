@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from "express";
 import { AuditService, auditService } from "./audit.service";
+import { AUDIT_DEPRECATION_NOTICE } from "./audit.constant";
 import {
   AuditLogQueryDto,
   AuditLogSummaryQueryDto,
@@ -50,6 +51,9 @@ export class AuditController {
     }
   };
 
+  /**
+   * @deprecated Incident review audit logs belong to `smart-ppe-incident-service` (Database-per-Service).
+   */
   // 3. Lọc nhanh duyệt sự cố vi phạm
   getIncidentReviews = async (
     req: Request<unknown, unknown, unknown, AuditLogQueryDto>,
@@ -58,6 +62,8 @@ export class AuditController {
   ) => {
     try {
       const result = await this.service.getIncidentReviews(req.query);
+      res.setHeader("Deprecation", "true");
+      res.setHeader("X-Deprecation-Notice", AUDIT_DEPRECATION_NOTICE);
       res.json({
         success: true,
         data: result.data,

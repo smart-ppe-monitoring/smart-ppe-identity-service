@@ -24,7 +24,12 @@ router.get(
   auditController.getConfigChanges,
 );
 
-// 2. Lọc nhanh Audit Log duyệt & xử lý sự cố vi phạm PPE
+/**
+ * @deprecated Identity Service chỉ lưu trữ nhật ký thuộc phạm vi Identity, RBAC, Auth và System Config (Database-per-Service).
+ * Các sự kiện duyệt & xử lý sự cố PPE thuộc quyền sở hữu của `smart-ppe-incident-service`.
+ * Route giữ lại để tương thích ngược và trả kèm header RFC 8594 `Deprecation: true`.
+ */
+// 2. Lọc nhanh Audit Log duyệt & xử lý sự cố vi phạm PPE (DEPRECATED)
 router.get(
   "/incident-reviews",
   authMiddleware,
