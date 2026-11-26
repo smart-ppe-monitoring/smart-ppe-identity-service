@@ -1,5 +1,16 @@
-import { describe, it, beforeEach } from "node:test";
+import { describe, it, beforeEach, before, after } from "node:test";
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
+import type http from "node:http";
+import type { AddressInfo } from "node:net";
+import app from "../src/identity.app";
+import { prisma } from "../src/database/prisma.client";
+import { envConfig } from "../src/config/env.config";
+import { GATEWAY_HEADERS } from "../src/common/constants/gateway.constant";
+import { JWT_PURPOSE } from "../src/common/constants/jwt.constant";
+import { PERMISSIONS } from "../src/common/constants/permission.constant";
+import { ROLES } from "../src/common/constants/role.constant";
+import { swaggerSpec } from "../src/config/swagger.config";
 import {
   createSystemConfigSchema,
   updateSystemConfigSchema,
@@ -7,14 +18,21 @@ import {
 } from "../src/modules/system-config/system-config.validation";
 import {
   AI_CONFIG_KEYS,
+  DEFAULT_SYSTEM_CONFIGS,
   FEATURE_FLAGS,
+  SYSTEM_CONFIG_CATEGORY,
+  SYSTEM_CONFIG_REDACTED_VALUE,
 } from "../src/common/constants/system-config.constant";
 import { NOTIFICATION_CHANNEL } from "../src/common/constants/notification.constant";
 import { EVENT_NAMES } from "../src/common/constants/event.constant";
 import { EmailWorker } from "../src/common/workers/email-worker";
 import { NotificationSubscriber } from "../src/common/subscribers/notification.subscriber";
 import { EventBusService } from "../src/common/services/event-bus.service";
-import { SystemConfigService } from "../src/modules/system-config/system-config.service";
+import {
+  SystemConfigService,
+  isSensitiveSystemConfig,
+} from "../src/modules/system-config/system-config.service";
+import { SystemConfigController } from "../src/modules/system-config/system-config.controller";
 import { SystemConfigRepository } from "../src/modules/system-config/system-config.repository";
 import { requireFeatureFlag } from "../src/middlewares/feature-flag.middleware";
 import { maintenanceGuard } from "../src/middlewares/maintenance.middleware";
@@ -529,5 +547,463 @@ describe("Notifications Feature Flag Enforcement (Identity Monolith Mode)", () =
     });
     assert.equal(sentCount, 1);
     await bus3.close();
+  });
+});
+
+describe("Issue #8: SystemConfig Audit Redaction, Branding Seed & Full DTO on GET /configs/:key", () => {
+  describe("1. Default Branding Seed Constants", () => {
+    it("DEFAULT_SYSTEM_CONFIGS should use Smart PPE Monitoring branding instead of template defaults", () => {
+      const appName = DEFAULT_SYSTEM_CONFIGS.find((c) => c.key === "app.name");
+      const supportEmail = DEFAULT_SYSTEM_CONFIGS.find(
+        (c) => c.key === "app.support_email",
+      );
+
+      assert.ok(appName);
+      assert.strictEqual(appName.value, "Smart PPE Monitoring");
+      assert.ok(supportEmail);
+      assert.strictEqual(supportEmail.value, "support@smartppe.vn");
+
+      const serialized = JSON.stringify(DEFAULT_SYSTEM_CONFIGS);
+      assert.ok(!serialized.includes("Backend Template Platform"));
+      assert.ok(!serialized.includes("support@example.com"));
+    });
+  });
+
+  describe("2. Audit Log Redaction on create & update", () => {
+    let mockDb: Map<string, any>;
+    let auditLogs: any[];
+    let service: SystemConfigService;
+
+    beforeEach(() => {
+      mockDb = new Map<string, any>();
+      auditLogs = [];
+
+      const mockRepo = {
+        findByKey: async (key: string) => mockDb.get(key) || null,
+        create: async (data: any) => {
+          const record = {
+            id: `cfg-${mockDb.size + 1}`,
+            description: null,
+            category: SYSTEM_CONFIG_CATEGORY.GENERAL,
+            isPublic: false,
+            ...data,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          };
+          mockDb.set(data.key, record);
+          return record;
+        },
+        update: async (key: string, data: any) => {
+          const existing = mockDb.get(key);
+          if (!existing) throw new Error("Not found");
+          const updated = { ...existing, ...data, updatedAt: new Date() };
+          mockDb.set(key, updated);
+          return updated;
+        },
+        createAuditLog: async (entry: any) => {
+          auditLogs.push(entry);
+        },
+      };
+
+      service = new SystemConfigService(mockRepo as any);
+    });
+
+    it("isSensitiveSystemConfig should treat isPublic=false or category=SECURITY as sensitive", () => {
+      assert.strictEqual(
+        isSensitiveSystemConfig({ isPublic: false, category: "GENERAL" }),
+        true,
+      );
+      assert.strictEqual(
+        isSensitiveSystemConfig({ isPublic: true, category: "SECURITY" }),
+        true,
+      );
+      assert.strictEqual(
+        isSensitiveSystemConfig({ isPublic: true, category: "GENERAL" }),
+        false,
+      );
+    });
+
+    it("create should redact value for private or SECURITY configs and keep plaintext for public non-security configs", async () => {
+      await service.create({
+        key: "internal.secret",
+        value: "secret-123",
+        category: SYSTEM_CONFIG_CATEGORY.GENERAL,
+        isPublic: false,
+      });
+      await service.create({
+        key: "security.public_flag",
+        value: "security-secret",
+        category: SYSTEM_CONFIG_CATEGORY.SECURITY,
+        isPublic: true,
+      });
+      await service.create({
+        key: "app.banner",
+        value: "Welcome",
+        category: SYSTEM_CONFIG_CATEGORY.GENERAL,
+        isPublic: true,
+      });
+
+      assert.strictEqual(
+        auditLogs[0].details.value,
+        SYSTEM_CONFIG_REDACTED_VALUE,
+      );
+      assert.strictEqual(
+        auditLogs[1].details.value,
+        SYSTEM_CONFIG_REDACTED_VALUE,
+      );
+      assert.strictEqual(auditLogs[2].details.value, "Welcome");
+    });
+
+    it("update should redact previous and updated values accurately across private, SECURITY, and visibility transitions", async () => {
+      // 1. Private config update
+      await service.create({
+        key: "private.api_token",
+        value: "old-secret",
+        category: SYSTEM_CONFIG_CATEGORY.GENERAL,
+        isPublic: false,
+      });
+      await service.update("private.api_token", { value: "new-secret" });
+      const privateUpdateLog = auditLogs[auditLogs.length - 1];
+      assert.strictEqual(
+        privateUpdateLog.details.previous.value,
+        SYSTEM_CONFIG_REDACTED_VALUE,
+      );
+      assert.strictEqual(
+        privateUpdateLog.details.updated.value,
+        SYSTEM_CONFIG_REDACTED_VALUE,
+      );
+
+      // 2. Private metadata-only update omits value from updated payload
+      await service.update("private.api_token", { description: "Rotated key" });
+      const metaUpdateLog = auditLogs[auditLogs.length - 1];
+      assert.strictEqual(
+        metaUpdateLog.details.previous.value,
+        SYSTEM_CONFIG_REDACTED_VALUE,
+      );
+      assert.strictEqual("value" in metaUpdateLog.details.updated, false);
+
+      // 3. SECURITY config even with isPublic=true
+      await service.create({
+        key: "security.policy",
+        value: "policy-v1",
+        category: SYSTEM_CONFIG_CATEGORY.SECURITY,
+        isPublic: true,
+      });
+      await service.update("security.policy", { value: "policy-v2" });
+      const secUpdateLog = auditLogs[auditLogs.length - 1];
+      assert.strictEqual(
+        secUpdateLog.details.previous.value,
+        SYSTEM_CONFIG_REDACTED_VALUE,
+      );
+      assert.strictEqual(
+        secUpdateLog.details.updated.value,
+        SYSTEM_CONFIG_REDACTED_VALUE,
+      );
+
+      // 4. Transition public -> private: old public value stays visible, new secret is redacted
+      await service.create({
+        key: "transition.config",
+        value: "public-v1",
+        category: SYSTEM_CONFIG_CATEGORY.GENERAL,
+        isPublic: true,
+      });
+      await service.update("transition.config", {
+        value: "private-v2",
+        isPublic: false,
+      });
+      const pubToPrivLog = auditLogs[auditLogs.length - 1];
+      assert.strictEqual(pubToPrivLog.details.previous.value, "public-v1");
+      assert.strictEqual(
+        pubToPrivLog.details.updated.value,
+        SYSTEM_CONFIG_REDACTED_VALUE,
+      );
+
+      // 5. Transition private -> public: old secret stays redacted, new public value is visible
+      await service.update("transition.config", {
+        value: "public-v3",
+        isPublic: true,
+      });
+      const privToPubLog = auditLogs[auditLogs.length - 1];
+      assert.strictEqual(
+        privToPubLog.details.previous.value,
+        SYSTEM_CONFIG_REDACTED_VALUE,
+      );
+      assert.strictEqual(privToPubLog.details.updated.value, "public-v3");
+
+      // 6. Public non-security update preserves plaintext
+      await service.update("transition.config", { value: "public-v4" });
+      const pubUpdateLog = auditLogs[auditLogs.length - 1];
+      assert.strictEqual(pubUpdateLog.details.previous.value, "public-v3");
+      assert.strictEqual(pubUpdateLog.details.updated.value, "public-v4");
+    });
+  });
+
+  describe("3. findByKey Full DTO & OpenAPI Schema", () => {
+    it("SystemConfigService.findByKey and SystemConfigController.findByKey should return full SystemConfig DTO and throw 404 when missing", async () => {
+      const now = new Date();
+      const fullRecord = {
+        id: "018f0000-0000-7000-8000-000000000099",
+        key: "app.name",
+        value: "Smart PPE Monitoring",
+        description: "Application name",
+        category: SYSTEM_CONFIG_CATEGORY.GENERAL,
+        isPublic: true,
+        createdAt: now,
+        updatedAt: now,
+      };
+
+      const mockRepo = {
+        findByKey: async (key: string) =>
+          key === "app.name" ? fullRecord : null,
+      };
+      const service = new SystemConfigService(mockRepo as any);
+
+      const found = await service.findByKey("app.name");
+      assert.deepStrictEqual(found, fullRecord);
+
+      await assert.rejects(
+        () => service.findByKey("missing.key"),
+        (err: any) =>
+          err instanceof AppError &&
+          err.statusCode === 404 &&
+          err.code === ERROR_CODE.NOT_FOUND,
+      );
+
+      const controller = new SystemConfigController(service);
+      let jsonOut: any = null;
+      await controller.findByKey(
+        { params: { key: "app.name" } } as any,
+        {
+          json: (payload: any) => {
+            jsonOut = payload;
+          },
+        } as any,
+        () => {},
+      );
+      assert.deepStrictEqual(jsonOut, { success: true, data: fullRecord });
+    });
+
+    it("OpenAPI GET /system/configs/{key} should include createdAt and updatedAt in response schema", () => {
+      const paths = swaggerSpec.paths as Record<string, any>;
+      const op = paths["/system/configs/{key}"]?.get;
+      assert.ok(op, "GET /system/configs/{key} must exist in OpenAPI spec");
+      const dataProps =
+        op.responses?.["200"]?.content?.["application/json"]?.schema?.properties
+          ?.data?.properties;
+      assert.ok(dataProps?.id);
+      assert.ok(dataProps?.key);
+      assert.ok(dataProps?.value);
+      assert.ok(dataProps?.category);
+      assert.ok(dataProps?.description);
+      assert.ok(dataProps?.isPublic);
+      assert.ok(dataProps?.createdAt);
+      assert.ok(dataProps?.updatedAt);
+    });
+  });
+
+  describe("4. Live HTTP + PostgreSQL (ppe_identity_db) Integration Tests", () => {
+    let dbAvailable = false;
+    let server: http.Server | null = null;
+    let baseUrl = "";
+    let adminToken = "";
+    let createdTempRoleId: string | null = null;
+    const createdUserIds: string[] = [];
+    const createdConfigKeys: string[] = [];
+    const createdConfigIds: string[] = [];
+
+    const suffix = crypto.randomBytes(4).toString("hex");
+    const testConfigKey = `it.issue8.secret_${suffix}`;
+
+    async function requestApi(
+      method: "GET" | "POST" | "PUT",
+      path: string,
+      body?: unknown,
+    ) {
+      const headers: Record<string, string> = {
+        authorization: `Bearer ${adminToken}`,
+      };
+      if (envConfig.gateway.internalSecret) {
+        headers[GATEWAY_HEADERS.INTERNAL_SECRET] =
+          envConfig.gateway.internalSecret;
+      }
+      if (body !== undefined) {
+        headers["content-type"] = "application/json";
+      }
+      const res = await fetch(`${baseUrl}${path}`, {
+        method,
+        headers,
+        body: body !== undefined ? JSON.stringify(body) : undefined,
+      });
+      const text = await res.text();
+      return {
+        status: res.status,
+        body: text ? JSON.parse(text) : null,
+      };
+    }
+
+    before(async () => {
+      try {
+        await prisma.$queryRaw`SELECT 1`;
+        dbAvailable = true;
+      } catch {
+        dbAvailable = false;
+        return;
+      }
+
+      permissionCacheService.clear();
+
+      let adminRole = await prisma.role.findFirst({
+        where: { name: ROLES.ADMIN },
+      });
+      if (!adminRole) {
+        adminRole = await prisma.role.create({
+          data: {
+            name: ROLES.ADMIN,
+            description: "Temporary test admin role",
+            isSystem: true,
+          },
+        });
+        createdTempRoleId = adminRole.id;
+      }
+
+      const adminUser = await prisma.user.create({
+        data: {
+          email: `it-issue8-admin-${suffix}@smartppe.local`,
+          fullName: `Issue8 Admin ${suffix}`,
+          roleId: adminRole.id,
+          isActive: true,
+          deletedAt: null,
+          siteIds: [],
+        },
+      });
+      createdUserIds.push(adminUser.id);
+
+      adminToken = jwtKeyService.signAccessToken({
+        id: adminUser.id,
+        email: adminUser.email!,
+        role: ROLES.ADMIN,
+        roleId: adminRole.id,
+        permissions: [
+          PERMISSIONS.SYSTEM_CONFIG_READ,
+          PERMISSIONS.SYSTEM_CONFIG_WRITE,
+        ],
+        purpose: JWT_PURPOSE.ACCESS,
+        mustChangePassword: false,
+      });
+
+      server = await new Promise<http.Server>((resolve) => {
+        const s = app.listen(0, "127.0.0.1", () => resolve(s));
+      });
+      const addr = server.address() as AddressInfo;
+      baseUrl = `http://127.0.0.1:${addr.port}`;
+    });
+
+    after(async () => {
+      try {
+        if (createdConfigIds.length > 0 && dbAvailable) {
+          await prisma.auditLog
+            .deleteMany({ where: { targetId: { in: createdConfigIds } } })
+            .catch(() => {});
+        }
+        if (createdConfigKeys.length > 0 && dbAvailable) {
+          await prisma.systemConfig
+            .deleteMany({ where: { key: { in: createdConfigKeys } } })
+            .catch(() => {});
+        }
+        if (createdUserIds.length > 0 && dbAvailable) {
+          await prisma.user
+            .deleteMany({ where: { id: { in: createdUserIds } } })
+            .catch(() => {});
+        }
+        if (createdTempRoleId && dbAvailable) {
+          await prisma.role
+            .deleteMany({ where: { id: createdTempRoleId } })
+            .catch(() => {});
+        }
+      } finally {
+        permissionCacheService.clear();
+        if (server) {
+          await new Promise<void>((resolve) => {
+            server!.close(() => resolve());
+          });
+        }
+        await prisma.$disconnect().catch(() => {});
+      }
+    });
+
+    it("POST/GET/PUT /api/v1/system/configs/:key should return full DTO and redact sensitive values in persisted audit_logs", async (t) => {
+      if (!dbAvailable) {
+        t.skip("PostgreSQL ppe_identity_db is unavailable");
+        return;
+      }
+
+      const secretV1 = `super-secret-v1-${suffix}`;
+      const secretV2 = `super-secret-v2-${suffix}`;
+
+      const createRes = await requestApi("POST", "/api/v1/system/configs", {
+        key: testConfigKey,
+        value: secretV1,
+        description: "Secret API key",
+        category: SYSTEM_CONFIG_CATEGORY.SECURITY,
+        isPublic: false,
+      });
+      assert.strictEqual(createRes.status, 201);
+      createdConfigKeys.push(testConfigKey);
+      createdConfigIds.push(createRes.body.data.id);
+
+      const getRes = await requestApi(
+        "GET",
+        `/api/v1/system/configs/${encodeURIComponent(testConfigKey)}`,
+      );
+      assert.strictEqual(getRes.status, 200);
+      assert.strictEqual(getRes.body.success, true);
+      assert.strictEqual(getRes.body.data.id, createRes.body.data.id);
+      assert.strictEqual(getRes.body.data.key, testConfigKey);
+      assert.strictEqual(getRes.body.data.value, secretV1);
+      assert.strictEqual(getRes.body.data.description, "Secret API key");
+      assert.strictEqual(
+        getRes.body.data.category,
+        SYSTEM_CONFIG_CATEGORY.SECURITY,
+      );
+      assert.strictEqual(getRes.body.data.isPublic, false);
+      assert.ok(getRes.body.data.createdAt);
+      assert.ok(getRes.body.data.updatedAt);
+
+      const updateRes = await requestApi(
+        "PUT",
+        `/api/v1/system/configs/${encodeURIComponent(testConfigKey)}`,
+        { value: secretV2 },
+      );
+      assert.strictEqual(updateRes.status, 200);
+
+      const logs = await prisma.auditLog.findMany({
+        where: { targetId: createRes.body.data.id },
+        orderBy: { createdAt: "asc" },
+      });
+      assert.strictEqual(logs.length, 2);
+
+      const createLogDetails = logs[0].details as Record<string, any>;
+      assert.strictEqual(createLogDetails.value, SYSTEM_CONFIG_REDACTED_VALUE);
+      assert.ok(!JSON.stringify(createLogDetails).includes(secretV1));
+
+      const updateLogDetails = logs[1].details as Record<string, any>;
+      assert.strictEqual(
+        updateLogDetails.previous.value,
+        SYSTEM_CONFIG_REDACTED_VALUE,
+      );
+      assert.strictEqual(
+        updateLogDetails.updated.value,
+        SYSTEM_CONFIG_REDACTED_VALUE,
+      );
+      assert.ok(!JSON.stringify(updateLogDetails).includes(secretV1));
+      assert.ok(!JSON.stringify(updateLogDetails).includes(secretV2));
+
+      const notFoundRes = await requestApi(
+        "GET",
+        `/api/v1/system/configs/non.existent.${suffix}`,
+      );
+      assert.strictEqual(notFoundRes.status, 404);
+      assert.strictEqual(notFoundRes.body.code, ERROR_CODE.NOT_FOUND);
+    });
   });
 });

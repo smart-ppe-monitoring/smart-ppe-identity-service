@@ -7,6 +7,8 @@ export const SYSTEM_CONFIG_CATEGORY = {
 
 export type SystemConfigCategory = keyof typeof SYSTEM_CONFIG_CATEGORY;
 
+export const SYSTEM_CONFIG_REDACTED_VALUE = "[REDACTED]" as const;
+
 export const FEATURE_FLAGS = {
   REGISTRATION_ENABLED: "feature.registration.enabled",
   NOTIFICATIONS_ENABLED: "feature.notifications.enabled",
@@ -20,14 +22,14 @@ export type FeatureFlagKey = (typeof FEATURE_FLAGS)[keyof typeof FEATURE_FLAGS];
 export const DEFAULT_SYSTEM_CONFIGS = [
   {
     key: "app.name",
-    value: "Backend Template Platform",
+    value: "Smart PPE Monitoring",
     description: "Tên ứng dụng hiển thị công khai",
     category: SYSTEM_CONFIG_CATEGORY.GENERAL,
     isPublic: true,
   },
   {
     key: "app.support_email",
-    value: "support@example.com",
+    value: "support@smartppe.vn",
     description: "Email liên hệ hỗ trợ khách hàng",
     category: SYSTEM_CONFIG_CATEGORY.GENERAL,
     isPublic: true,

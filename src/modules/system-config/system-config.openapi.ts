@@ -103,6 +103,8 @@ export function registerSystemConfigOpenApi(): void {
                 category: z.string(),
                 description: z.string().nullable(),
                 isPublic: z.boolean(),
+                createdAt: z.string().datetime(),
+                updatedAt: z.string().datetime(),
               }),
             }),
           },

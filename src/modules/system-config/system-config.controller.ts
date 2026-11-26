@@ -62,13 +62,10 @@ export class SystemConfigController {
   ): Promise<void> => {
     try {
       const { key } = req.params;
-      const data = await this.service.get(key);
+      const data = await this.service.findByKey(key);
       res.json({
         success: true,
-        data: {
-          key,
-          value: data,
-        },
+        data,
       });
     } catch (error) {
       next(error);

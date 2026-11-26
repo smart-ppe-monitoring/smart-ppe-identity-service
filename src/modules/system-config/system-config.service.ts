@@ -7,6 +7,7 @@ import { ERROR_CODE } from "../../common/errors/error-code";
 import {
   CreateSystemConfigDto,
   UpdateSystemConfigDto,
+  SystemConfigItemDto,
   SystemConfigQueryDto,
   ToggleFeatureFlagDto,
 } from "./system-config.dto";
@@ -14,6 +15,7 @@ import {
   DEFAULT_SYSTEM_CONFIGS,
   SYSTEM_CONFIG_CATEGORY,
   SYSTEM_CONFIG_PUBSUB_CHANNEL,
+  SYSTEM_CONFIG_REDACTED_VALUE,
 } from "../../common/constants/system-config.constant";
 import {
   AUDIT_ACTION,
@@ -34,6 +36,16 @@ const isTestEnv =
   process.env.NODE_ENV === "test" ||
   process.argv.some((arg) => arg.includes("test")) ||
   process.env.npm_lifecycle_event === "test";
+
+export function isSensitiveSystemConfig(config: {
+  isPublic?: boolean | null;
+  category?: string | null;
+}): boolean {
+  return (
+    config.isPublic === false ||
+    config.category === SYSTEM_CONFIG_CATEGORY.SECURITY
+  );
+}
 
 export function parseBooleanFlag(value: unknown, defaultState = true): boolean {
   if (typeof value === "boolean") return value;
@@ -157,6 +169,21 @@ export class SystemConfigService {
   }
 
   /**
+   * Lấy bản ghi cấu hình đầy đủ theo key.
+   */
+  async findByKey(key: string): Promise<SystemConfigItemDto> {
+    const config = await this.repository.findByKey(key);
+    if (!config) {
+      throw new AppError(
+        `System configuration '${key}' not found`,
+        404,
+        ERROR_CODE.NOT_FOUND,
+      );
+    }
+    return config;
+  }
+
+  /**
    * Lấy giá trị cấu hình theo key (có cache).
    */
   async get<T = unknown>(key: string, defaultValue?: T): Promise<T> {
@@ -238,6 +265,8 @@ export class SystemConfigService {
     const created = await this.repository.create(data);
     this.invalidateCache(data.key, created.isPublic ? created.value : undefined);
 
+    const sensitive = isSensitiveSystemConfig(created);
+
     await this.repository.createAuditLog({
       actorId: context?.actorId,
       action: AUDIT_ACTION.CREATE_SYSTEM_CONFIG,
@@ -245,6 +274,7 @@ export class SystemConfigService {
       targetId: created.id,
       details: {
         key: created.key,
+        value: sensitive ? SYSTEM_CONFIG_REDACTED_VALUE : created.value,
         category: created.category,
         isPublic: created.isPublic,
       },
@@ -275,6 +305,13 @@ export class SystemConfigService {
     const updated = await this.repository.update(key, data);
     this.invalidateCache(key, updated.isPublic ? updated.value : undefined);
 
+    const isPreviousSensitive = isSensitiveSystemConfig(existing);
+    const isUpdatedSensitive = isSensitiveSystemConfig(updated);
+    const sanitizedUpdated: UpdateSystemConfigDto = { ...data };
+    if (isUpdatedSensitive && "value" in sanitizedUpdated) {
+      sanitizedUpdated.value = SYSTEM_CONFIG_REDACTED_VALUE;
+    }
+
     await this.repository.createAuditLog({
       actorId: context?.actorId,
       action: AUDIT_ACTION.UPDATE_SYSTEM_CONFIG,
@@ -283,11 +320,13 @@ export class SystemConfigService {
       details: {
         key,
         previous: {
-          value: existing.value,
+          value: isPreviousSensitive
+            ? SYSTEM_CONFIG_REDACTED_VALUE
+            : existing.value,
           category: existing.category,
           isPublic: existing.isPublic,
         },
-        updated: data,
+        updated: sanitizedUpdated,
       },
       ipAddress: context?.ipAddress,
       userAgent: context?.userAgent,
