@@ -21,7 +21,7 @@ export function registerUserOpenApi(): void {
     tags: ["Users"],
     summary: "Danh sách người dùng (Phân trang, tìm kiếm & lọc)",
     description:
-      "Lấy danh sách người dùng có hỗ trợ phân trang, tìm kiếm toàn văn và lọc theo siteId (nhân sự thuộc công trường) hoặc excludeSiteId (nhân sự chưa thuộc công trường).",
+      "Lấy danh sách người dùng có hỗ trợ phân trang, tìm kiếm toàn văn và lọc theo siteId (nhân sự thuộc công trường), excludeSiteId (nhân sự chưa thuộc công trường), twoFactorEnabled (trạng thái 2FA TOTP) và isLocked (tài khoản bị vô hiệu hóa hoặc đang trong thời gian khóa).",
     security: [{ BearerAuth: [] }],
     request: {
       query: findAllUserSchema,
@@ -42,6 +42,7 @@ export function registerUserOpenApi(): void {
                   avatarUrl: z.string().nullable(),
                   siteIds: z.array(z.string().uuid()),
                   isActive: z.boolean(),
+                  twoFactorEnabled: z.boolean(),
                   isEmailVerified: z.boolean(),
                   role: z.object({
                     id: z.string().uuid(),
@@ -66,6 +67,38 @@ export function registerUserOpenApi(): void {
         description:
           "Tham số truy vấn không hợp lệ (ví dụ: siteId hoặc excludeSiteId không đúng định dạng UUID)",
       },
+    },
+  });
+
+  // GET /users/summary
+  openapiRegistry.registerPath({
+    method: "get",
+    path: "/users/summary",
+    tags: ["Users"],
+    summary: "Thống kê tổng hợp người dùng (KPI Summary)",
+    description:
+      "Tổng hợp số liệu KPI người dùng chưa bị xóa mềm trực tiếp trên database: total, active, twoFactor, locked (!isActive hoặc lockedUntil > now) và phân bổ theo vai trò byRole.",
+    security: [{ BearerAuth: [] }],
+    responses: {
+      200: {
+        description: "Lấy thống kê tổng hợp thành công",
+        content: {
+          "application/json": {
+            schema: z.object({
+              success: z.boolean().openapi({ example: true }),
+              data: z.object({
+                total: z.number().int(),
+                active: z.number().int(),
+                twoFactor: z.number().int(),
+                locked: z.number().int(),
+                byRole: z.record(z.string(), z.number().int()),
+              }),
+            }),
+          },
+        },
+      },
+      401: { description: "Chưa xác thực" },
+      403: { description: "Không có quyền USER_READ" },
     },
   });
 

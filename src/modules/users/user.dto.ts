@@ -7,10 +7,20 @@ export interface UserQueryDto {
   excludeSiteId?: string;
   isActive?: boolean;
   isDeleted?: boolean;
+  twoFactorEnabled?: boolean;
+  isLocked?: boolean;
   sortBy?: "createdAt" | "email" | "fullName";
   order?: "asc" | "desc";
   page?: number;
   limit?: number;
+}
+
+export interface UserSummaryDto {
+  total: number;
+  active: number;
+  twoFactor: number;
+  locked: number;
+  byRole: Record<string, number>;
 }
 
 export interface CreateUserDto {

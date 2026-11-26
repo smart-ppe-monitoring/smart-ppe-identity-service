@@ -27,6 +27,16 @@ export const findAllUserSchema = z.object({
     .enum(["true", "false"])
     .transform((v) => v === "true")
     .optional(),
+  twoFactorEnabled: z
+    .enum(["true", "false"])
+    .transform((v) => v === "true")
+    .optional()
+    .describe("Lọc người dùng theo trạng thái bật/tắt xác thực hai bước (2FA TOTP)"),
+  isLocked: z
+    .enum(["true", "false"])
+    .transform((v) => v === "true")
+    .optional()
+    .describe("Lọc người dùng theo trạng thái bị khóa (!isActive hoặc lockedUntil > now)"),
 
   sortBy: z.enum(["createdAt", "email", "fullName"]).optional(),
   order: z.enum(["asc", "desc"]).optional(),

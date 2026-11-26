@@ -13,6 +13,7 @@ import { parseUserAgent } from "../../common/helpers/user-agent.helper";
 import { permissionCacheService } from "../../common/services/permission-cache.service";
 import {
   UserQueryDto,
+  UserSummaryDto,
   CreateUserDto,
   UpdateUserDto,
   AdminResetPasswordDto,
@@ -65,6 +66,10 @@ export class UserService {
       );
     }
     return false;
+  }
+
+  async getSummary(): Promise<UserSummaryDto> {
+    return this.repository.getSummary();
   }
 
   async findAll(

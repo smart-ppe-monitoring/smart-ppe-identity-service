@@ -3,7 +3,7 @@ import { prisma } from "../../database/prisma.client";
 import { ROLES } from "../../common/constants/role.constant";
 import { PERMISSIONS } from "../../common/constants/permission.constant";
 import { SYSTEM_TARGET_ID } from "../../common/constants/audit-log.constant";
-import { UserQueryDto } from "./user.dto";
+import { UserQueryDto, UserSummaryDto } from "./user.dto";
 import {
   calculatePaginationSkip,
   formatPaginationMeta,
@@ -90,6 +90,8 @@ export class UserRepository {
       excludeSiteId,
       isActive,
       isDeleted,
+      twoFactorEnabled,
+      isLocked,
       sortBy = "createdAt",
       order = "desc",
       page = 1,
@@ -110,6 +112,24 @@ export class UserRepository {
     }
     if (isActive !== undefined) {
       conditions.push({ isActive });
+    }
+    if (twoFactorEnabled !== undefined) {
+      conditions.push({ twoFactorEnabled });
+    }
+    if (isLocked !== undefined) {
+      const now = new Date();
+      if (isLocked) {
+        conditions.push({
+          OR: [{ isActive: false }, { lockedUntil: { gt: now } }],
+        });
+      } else {
+        conditions.push({
+          AND: [
+            { isActive: true },
+            { OR: [{ lockedUntil: null }, { lockedUntil: { lte: now } }] },
+          ],
+        });
+      }
     }
     if (roleName) {
       conditions.push({ role: { name: roleName } });
@@ -199,6 +219,25 @@ export class UserRepository {
 
     if (query.isActive !== undefined) {
       whereConditions.push(Prisma.sql`u.is_active = ${query.isActive}`);
+    }
+
+    if (query.twoFactorEnabled !== undefined) {
+      whereConditions.push(
+        Prisma.sql`u.two_factor_enabled = ${query.twoFactorEnabled}`,
+      );
+    }
+
+    if (query.isLocked !== undefined) {
+      const now = new Date();
+      if (query.isLocked) {
+        whereConditions.push(
+          Prisma.sql`(u.is_active = false OR (u.locked_until IS NOT NULL AND u.locked_until > (${now}::timestamptz AT TIME ZONE 'UTC')))`,
+        );
+      } else {
+        whereConditions.push(
+          Prisma.sql`(u.is_active = true AND (u.locked_until IS NULL OR u.locked_until <= (${now}::timestamptz AT TIME ZONE 'UTC')))`,
+        );
+      }
     }
 
     if (query.roleName) {
@@ -297,6 +336,62 @@ export class UserRepository {
     return {
       data,
       meta: formatPaginationMeta(safePage, safeLimit, total),
+    };
+  }
+
+  /**
+   * Tổng hợp số liệu KPI người dùng chưa bị xóa mềm trực tiếp trên database.
+   */
+  async getSummary(): Promise<UserSummaryDto> {
+    const now = new Date();
+
+    const [kpiRows, roleRows] = await this.db.$transaction([
+      this.db.$queryRaw<
+        Array<{
+          total: bigint;
+          active: bigint;
+          two_factor: bigint;
+          locked: bigint;
+        }>
+      >`
+        SELECT
+          COUNT(*)::bigint AS total,
+          COUNT(*) FILTER (WHERE is_active = true AND (locked_until IS NULL OR locked_until <= (${now}::timestamptz AT TIME ZONE 'UTC')))::bigint AS active,
+          COUNT(*) FILTER (WHERE two_factor_enabled = true)::bigint AS two_factor,
+          COUNT(*) FILTER (WHERE is_active = false OR (locked_until IS NOT NULL AND locked_until > (${now}::timestamptz AT TIME ZONE 'UTC')))::bigint AS locked
+        FROM users
+        WHERE deleted_at IS NULL
+      `,
+      this.db.$queryRaw<
+        Array<{
+          role_name: string;
+          count: bigint;
+        }>
+      >`
+        SELECT
+          r.name AS role_name,
+          COUNT(*)::bigint AS count
+        FROM users u
+        INNER JOIN roles r ON u.role_id = r.id
+        WHERE u.deleted_at IS NULL
+        GROUP BY r.name
+      `,
+    ]);
+
+    const summary = kpiRows[0];
+    const byRole: Record<string, number> = {};
+    for (const row of roleRows) {
+      if (row.role_name) {
+        byRole[row.role_name] = Number(row.count ?? 0);
+      }
+    }
+
+    return {
+      total: Number(summary?.total ?? 0),
+      active: Number(summary?.active ?? 0),
+      twoFactor: Number(summary?.two_factor ?? 0),
+      locked: Number(summary?.locked ?? 0),
+      byRole,
     };
   }
 

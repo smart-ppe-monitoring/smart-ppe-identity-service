@@ -10,6 +10,19 @@ import {
 export class UserController {
   private readonly service = new UserService();
 
+  getSummary = async (_req: Request, res: Response, next: NextFunction) => {
+    try {
+      const data = await this.service.getSummary();
+
+      res.json({
+        success: true,
+        data,
+      });
+    } catch (error) {
+      next(error);
+    }
+  };
+
   findAll = async (
     req: Request<unknown, unknown, unknown, UserQueryDto>,
     res: Response,

@@ -30,6 +30,13 @@ router.get(
   validate(findAllUserSchema, "query"),
   controller.findAll,
 );
+// Summary KPI endpoint (MUST stay before /:id param route)
+router.get(
+  "/summary",
+  authMiddleware,
+  requirePermission(PERMISSIONS.USER_READ),
+  controller.getSummary,
+);
 // Internal M2M endpoint (MUST stay before /:id param route)
 router.get(
   "/internal/incident-recipients",
