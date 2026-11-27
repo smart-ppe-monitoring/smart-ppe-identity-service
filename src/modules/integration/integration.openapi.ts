@@ -58,6 +58,10 @@ export function registerIntegrationOpenApi(): void {
           },
         },
       },
+      403: {
+        description:
+          "Không có quyền API_KEY_MANAGE hoặc danh sách quyền yêu cầu vượt quá quyền của người tạo",
+      },
     },
   });
 
@@ -301,7 +305,7 @@ export function registerIntegrationOpenApi(): void {
     method: "post",
     path: "/integration/webhooks/{id}/test",
     tags: ["Integrations — Webhooks"],
-    summary: "Gửi Test Ping sự kiện `test.ping` để kiểm tra endpoint",
+    summary: "Gửi Test Ping sự kiện `system.ping` để kiểm tra endpoint",
     security: [{ BearerAuth: [] }],
     request: { params: webhookIdParamSchema },
     responses: {
@@ -317,6 +321,10 @@ export function registerIntegrationOpenApi(): void {
             }),
           },
         },
+      },
+      403: {
+        description:
+          "Không có quyền WEBHOOK_MANAGE hoặc feature.webhooks.enabled đang tắt",
       },
     },
   });
@@ -384,6 +392,10 @@ export function registerIntegrationOpenApi(): void {
             }),
           },
         },
+      },
+      403: {
+        description:
+          "Không có quyền WEBHOOK_MANAGE hoặc feature.webhooks.enabled đang tắt",
       },
     },
   });

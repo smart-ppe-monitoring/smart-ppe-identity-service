@@ -141,6 +141,38 @@ export class IntegrationRepository {
     });
   }
 
+  async findActiveWebhooksForBroadcast() {
+    return prisma.webhookEndpoint.findMany({
+      where: {
+        isActive: true,
+        user: {
+          isActive: true,
+          deletedAt: null,
+        },
+      },
+    });
+  }
+
+  async findActiveWebhooksForUsersOrAdmins(
+    userIds: string[],
+    adminRoleName: string,
+  ) {
+    const uniqueIds = Array.from(new Set(userIds.filter(Boolean)));
+    return prisma.webhookEndpoint.findMany({
+      where: {
+        isActive: true,
+        user: {
+          isActive: true,
+          deletedAt: null,
+          OR: [
+            ...(uniqueIds.length > 0 ? [{ id: { in: uniqueIds } }] : []),
+            { role: { name: adminRoleName } },
+          ],
+        },
+      },
+    });
+  }
+
   async createDelivery(data: {
     webhookEndpointId: string;
     userId: string;

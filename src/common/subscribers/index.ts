@@ -2,6 +2,7 @@ import { envConfig } from "../../config/env.config";
 import { notificationSubscriber } from "./notification.subscriber";
 import { authCleanupSubscriber } from "./auth-cleanup.subscriber";
 import { storageCleanupSubscriber } from "./storage-cleanup.subscriber";
+import { webhookSubscriber } from "./webhook.subscriber";
 
 let isRegistered = false;
 
@@ -15,6 +16,7 @@ export function registerAllSubscribers(): void {
   }
   authCleanupSubscriber.register();
   storageCleanupSubscriber.register();
+  webhookSubscriber.register();
   isRegistered = true;
   console.log(
     "[EventBus] 🚀 All microservices event subscribers registered successfully",

@@ -24,8 +24,10 @@ import {
   EventBusService,
 } from "../../common/services/event-bus.service";
 import { EVENT_NAMES } from "../../common/constants/event.constant";
+import { WEBHOOK_EVENTS } from "../../common/constants/integration.constant";
 import { R2Service } from "../../common/services/r2.service";
 import { envConfig } from "../../config/env.config";
+import { integrationService } from "../integration/integration.service";
 
 export class UserService {
   private readonly repository: UserRepository;
@@ -282,6 +284,30 @@ export class UserService {
     const updatedUser = await this.repository.update(id, updatePayload);
 
     permissionCacheService.invalidateUser(id);
+
+    integrationService
+      .dispatchDomainWebhookEvent(
+        WEBHOOK_EVENTS.USER_UPDATED,
+        {
+          event: WEBHOOK_EVENTS.USER_UPDATED,
+          userId: id,
+          actorId: actorId || null,
+          updatedFields: Object.keys(updatePayload),
+          source: "ADMIN_USER_UPDATE",
+          updatedAt: new Date().toISOString(),
+        },
+        {
+          scope: "users_or_admins",
+          userIds: actorId ? [id, actorId] : [id],
+        },
+      )
+      .catch((err: any) =>
+        console.warn(
+          "[UserService] Failed to dispatch user.updated webhook:",
+          err?.message || err,
+        ),
+      );
+
     return updatedUser;
   }
 

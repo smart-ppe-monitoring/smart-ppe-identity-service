@@ -1,5 +1,8 @@
 import crypto from "node:crypto";
-import { IntegrationRepository } from "./integration.repository";
+import {
+  IntegrationRepository,
+  integrationRepository,
+} from "./integration.repository";
 import { AppError } from "../../common/errors/app-error";
 import { ERROR_CODE } from "../../common/errors/error-code";
 import {
@@ -26,15 +29,89 @@ import {
   AUDIT_ACTION,
   AUDIT_TARGET_TYPE,
 } from "../../common/constants/audit-log.constant";
+import { ROLES } from "../../common/constants/role.constant";
+import { FEATURE_FLAGS } from "../../common/constants/system-config.constant";
+import {
+  permissionCacheService,
+  PermissionCacheService,
+} from "../../common/services/permission-cache.service";
+import {
+  systemConfigService,
+  SystemConfigService,
+} from "../system-config/system-config.service";
+
+export type AuditMetadata = {
+  ipAddress?: string;
+  userAgent?: string;
+};
+
+export function maskWebhookSecret(plainSecret: string): string {
+  if (plainSecret.startsWith("whsec_")) {
+    return `whsec_${plainSecret.slice(6, 12)}...`;
+  }
+  const visiblePrefixLen = Math.min(
+    4,
+    Math.max(1, Math.floor(plainSecret.length / 4)),
+  );
+  return `${plainSecret.slice(0, visiblePrefixLen)}••••••••`;
+}
 
 export class IntegrationService {
-  private readonly repository = new IntegrationRepository();
+  constructor(
+    private readonly repository: IntegrationRepository = integrationRepository,
+    private readonly permissionCache: Pick<
+      PermissionCacheService,
+      "getUserState" | "getRolePermissions"
+    > = permissionCacheService,
+    private readonly configService: Pick<
+      SystemConfigService,
+      "isFeatureEnabled"
+    > = systemConfigService,
+    private readonly queue: Pick<
+      typeof webhookQueue,
+      "enqueue"
+    > = webhookQueue,
+  ) {}
+
+  private async isWebhooksEnabled(): Promise<boolean> {
+    return this.configService.isFeatureEnabled(
+      FEATURE_FLAGS.WEBHOOKS_ENABLED,
+      true,
+    );
+  }
 
   // ── API Key Business Logic ───────────────────────────────────────────────────
   async createApiKey(
     userId: string,
     data: CreateApiKeyDto,
+    metadata?: AuditMetadata,
   ): Promise<CreateApiKeyResponseDto> {
+    const requestedPermissions = Array.from(new Set(data.permissions || []));
+    const userState = await this.permissionCache.getUserState(userId);
+    if (!userState || !userState.isActive || userState.deletedAt) {
+      throw new AppError(
+        "Tài khoản không hoạt động hoặc không tồn tại",
+        403,
+        ERROR_CODE.FORBIDDEN,
+      );
+    }
+
+    if (userState.roleName !== ROLES.ADMIN && requestedPermissions.length > 0) {
+      const ownedPermissions = userState.roleId
+        ? await this.permissionCache.getRolePermissions(userState.roleId)
+        : new Set<string>();
+      const unauthorized = requestedPermissions.filter(
+        (perm) => !ownedPermissions.has(perm),
+      );
+      if (unauthorized.length > 0) {
+        throw new AppError(
+          `Bạn không thể cấp quyền vượt quá phạm vi quyền hạn hiện có của mình cho API Key: ${unauthorized.join(", ")}`,
+          403,
+          ERROR_CODE.FORBIDDEN,
+        );
+      }
+    }
+
     const { plainTextKey, keyHash, displayPrefix } = generateApiKey();
     const expiresAt = data.expiresAt ? new Date(data.expiresAt) : null;
 
@@ -43,7 +120,7 @@ export class IntegrationService {
       keyHash,
       prefix: displayPrefix,
       userId,
-      permissions: data.permissions || [],
+      permissions: requestedPermissions,
       expiresAt,
     });
 
@@ -54,7 +131,13 @@ export class IntegrationService {
         action: AUDIT_ACTION.CREATE_API_KEY,
         targetType: AUDIT_TARGET_TYPE.API_KEY,
         targetId: apiKey.id,
-        details: { name: apiKey.name, prefix: displayPrefix },
+        details: {
+          name: apiKey.name,
+          prefix: displayPrefix,
+          permissions: requestedPermissions,
+        },
+        ipAddress: metadata?.ipAddress,
+        userAgent: metadata?.userAgent,
       })
       .catch((err) =>
         console.warn("[AuditLog] Failed to record event:", err?.message || err),
@@ -85,7 +168,11 @@ export class IntegrationService {
     }));
   }
 
-  async deleteApiKey(userId: string, id: string): Promise<void> {
+  async deleteApiKey(
+    userId: string,
+    id: string,
+    metadata?: AuditMetadata,
+  ): Promise<void> {
     const existing = await this.repository.findApiKeyById(userId, id);
     if (!existing) {
       throw new AppError("API Key not found", 404, ERROR_CODE.NOT_FOUND);
@@ -100,6 +187,8 @@ export class IntegrationService {
         targetType: AUDIT_TARGET_TYPE.API_KEY,
         targetId: id,
         details: { name: existing.name, prefix: existing.prefix },
+        ipAddress: metadata?.ipAddress,
+        userAgent: metadata?.userAgent,
       })
       .catch((err) =>
         console.warn("[AuditLog] Failed to record event:", err?.message || err),
@@ -110,7 +199,7 @@ export class IntegrationService {
     userId: string,
     id: string,
     isActive: boolean,
-    metadata?: { ipAddress?: string; userAgent?: string },
+    metadata?: AuditMetadata,
   ): Promise<void> {
     const existing = await this.repository.findApiKeyById(userId, id);
     if (!existing) {
@@ -138,6 +227,7 @@ export class IntegrationService {
   async createWebhook(
     userId: string,
     data: CreateWebhookDto,
+    metadata?: AuditMetadata,
   ): Promise<WebhookEndpointDto & { secret: string }> {
     // HIGH-01 Fix: Xác thực DNS Rebinding chống trỏ về Private/Metadata IP
     const hostname = new URL(data.url).hostname;
@@ -170,6 +260,8 @@ export class IntegrationService {
         targetType: AUDIT_TARGET_TYPE.WEBHOOK_ENDPOINT,
         targetId: webhook.id,
         details: { url: webhook.url, events },
+        ipAddress: metadata?.ipAddress,
+        userAgent: metadata?.userAgent,
       })
       .catch((err) =>
         console.warn("[AuditLog] Failed to record event:", err?.message || err),
@@ -183,7 +275,7 @@ export class IntegrationService {
       description: webhook.description,
       createdAt: webhook.createdAt,
       updatedAt: webhook.updatedAt,
-      secretMasked: `whsec_${plainSecret.slice(6, 12)}...`,
+      secretMasked: maskWebhookSecret(plainSecret),
       secret: plainSecret, // Trả về 1 lần duy nhất lúc tạo
     };
   }
@@ -231,6 +323,7 @@ export class IntegrationService {
     userId: string,
     id: string,
     data: UpdateWebhookDto,
+    metadata?: AuditMetadata,
   ): Promise<void> {
     const existing = await this.repository.findWebhookById(userId, id);
     if (!existing) {
@@ -274,13 +367,19 @@ export class IntegrationService {
         targetType: AUDIT_TARGET_TYPE.WEBHOOK_ENDPOINT,
         targetId: id,
         details: { url: data.url, events: data.events },
+        ipAddress: metadata?.ipAddress,
+        userAgent: metadata?.userAgent,
       })
       .catch((err) =>
         console.warn("[AuditLog] Failed to record event:", err?.message || err),
       );
   }
 
-  async deleteWebhook(userId: string, id: string): Promise<void> {
+  async deleteWebhook(
+    userId: string,
+    id: string,
+    metadata?: AuditMetadata,
+  ): Promise<void> {
     const existing = await this.repository.findWebhookById(userId, id);
     if (!existing) {
       throw new AppError(
@@ -299,6 +398,8 @@ export class IntegrationService {
         targetType: AUDIT_TARGET_TYPE.WEBHOOK_ENDPOINT,
         targetId: id,
         details: { url: existing.url },
+        ipAddress: metadata?.ipAddress,
+        userAgent: metadata?.userAgent,
       })
       .catch((err) =>
         console.warn("[AuditLog] Failed to record event:", err?.message || err),
@@ -315,11 +416,55 @@ export class IntegrationService {
     event: WebhookEvent | string,
     payload: Record<string, unknown>,
   ): Promise<{ dispatchedCount: number; deliveryIds: string[] }> {
+    if (!(await this.isWebhooksEnabled())) {
+      return { dispatchedCount: 0, deliveryIds: [] };
+    }
+
     const activeEndpoints =
       await this.repository.findActiveWebhooksForUser(userId);
 
+    return this.dispatchToMatchedEndpoints(activeEndpoints, event, payload);
+  }
+
+  /**
+   * Dispatch sự kiện domain/hệ thống tới các Webhook endpoints phù hợp (broadcast hoặc scoped theo user/admin).
+   */
+  async dispatchDomainWebhookEvent(
+    event: WebhookEvent | string,
+    payload: Record<string, unknown>,
+    options: {
+      scope?: "broadcast" | "users_or_admins";
+      userIds?: string[];
+    } = {},
+  ): Promise<{ dispatchedCount: number; deliveryIds: string[] }> {
+    if (!(await this.isWebhooksEnabled())) {
+      return { dispatchedCount: 0, deliveryIds: [] };
+    }
+
+    const activeEndpoints =
+      options.scope === "users_or_admins"
+        ? await this.repository.findActiveWebhooksForUsersOrAdmins(
+            options.userIds || [],
+            ROLES.ADMIN,
+          )
+        : await this.repository.findActiveWebhooksForBroadcast();
+
+    return this.dispatchToMatchedEndpoints(activeEndpoints, event, payload);
+  }
+
+  private async dispatchToMatchedEndpoints(
+    activeEndpoints: Array<{
+      id: string;
+      userId: string;
+      url: string;
+      encryptedSecret: string;
+      events: unknown;
+    }>,
+    event: WebhookEvent | string,
+    payload: Record<string, unknown>,
+  ): Promise<{ dispatchedCount: number; deliveryIds: string[] }> {
     // Lọc các webhook lắng nghe event này hoặc '*'
-    const matchedEndpoints = activeEndpoints.filter((endpoint: any) => {
+    const matchedEndpoints = activeEndpoints.filter((endpoint) => {
       const events = (endpoint.events as string[]) || [];
       return (
         events.includes(event) ||
@@ -336,7 +481,7 @@ export class IntegrationService {
       matchedEndpoints.map((endpoint) =>
         this.repository.createDelivery({
           webhookEndpointId: endpoint.id,
-          userId,
+          userId: endpoint.userId,
           event,
           payload,
           signature: "pending",
@@ -348,10 +493,10 @@ export class IntegrationService {
     const deliveryIds = deliveries.map((d) => d.id);
 
     const enqueueTasks = matchedEndpoints.map((endpoint, index) =>
-      webhookQueue.enqueue({
+      this.queue.enqueue({
         deliveryId: deliveries[index].id,
         webhookEndpointId: endpoint.id,
-        userId,
+        userId: endpoint.userId,
         event,
         url: endpoint.url,
         encryptedSecret: endpoint.encryptedSecret,
@@ -368,6 +513,14 @@ export class IntegrationService {
     userId: string,
     id: string,
   ): Promise<{ deliveryId: string; message: string }> {
+    if (!(await this.isWebhooksEnabled())) {
+      throw new AppError(
+        "Tính năng Webhook hiện đang tạm khóa bởi quản trị viên",
+        403,
+        ERROR_CODE.FEATURE_DISABLED,
+      );
+    }
+
     const webhook = await this.repository.findWebhookById(userId, id);
     if (!webhook) {
       throw new AppError(
@@ -393,7 +546,7 @@ export class IntegrationService {
       status: WEBHOOK_STATUS.PENDING,
     });
 
-    await webhookQueue.enqueue({
+    await this.queue.enqueue({
       deliveryId: delivery.id,
       webhookEndpointId: webhook.id,
       userId,
@@ -436,7 +589,16 @@ export class IntegrationService {
   async retryDelivery(
     userId: string,
     deliveryId: string,
+    metadata?: AuditMetadata,
   ): Promise<{ deliveryId: string; message: string }> {
+    if (!(await this.isWebhooksEnabled())) {
+      throw new AppError(
+        "Tính năng Webhook hiện đang tạm khóa bởi quản trị viên",
+        403,
+        ERROR_CODE.FEATURE_DISABLED,
+      );
+    }
+
     const delivery = await this.repository.findDeliveryById(deliveryId, userId);
     if (!delivery || !delivery.webhookEndpoint) {
       throw new AppError(
@@ -453,15 +615,18 @@ export class IntegrationService {
       statusCode: null,
     });
 
-    await webhookQueue.enqueue({
-      deliveryId: delivery.id,
-      webhookEndpointId: delivery.webhookEndpointId,
-      userId,
-      event: delivery.event,
-      url: delivery.webhookEndpoint.url,
-      encryptedSecret: delivery.webhookEndpoint.encryptedSecret,
-      payload: delivery.payload as Record<string, unknown>,
-    });
+    await this.queue.enqueue(
+      {
+        deliveryId: delivery.id,
+        webhookEndpointId: delivery.webhookEndpointId,
+        userId,
+        event: delivery.event,
+        url: delivery.webhookEndpoint.url,
+        encryptedSecret: delivery.webhookEndpoint.encryptedSecret,
+        payload: delivery.payload as Record<string, unknown>,
+      },
+      { isRetry: true },
+    );
 
     await this.repository
       .createAuditLog({
@@ -470,6 +635,8 @@ export class IntegrationService {
         targetType: AUDIT_TARGET_TYPE.WEBHOOK_DELIVERY,
         targetId: deliveryId,
         details: { event: delivery.event },
+        ipAddress: metadata?.ipAddress,
+        userAgent: metadata?.userAgent,
       })
       .catch((err) =>
         console.warn("[AuditLog] Failed to record event:", err?.message || err),
@@ -522,3 +689,5 @@ export class IntegrationService {
     };
   }
 }
+
+export const integrationService = new IntegrationService();

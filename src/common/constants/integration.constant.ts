@@ -13,6 +13,9 @@ export const WEBHOOK_EVENTS = {
   JOB_FAILED: "job.failed",
   SYSTEM_PING: "system.ping",
   USER_UPDATED: "user.updated",
+  PPE_INCIDENT_CREATED: "ppe.incident.created",
+  PPE_INCIDENT_ASSIGNED: "ppe.incident.assigned",
+  PPE_INCIDENT_RESOLVED: "ppe.incident.resolved",
 } as const;
 
 export type WebhookEvent = (typeof WEBHOOK_EVENTS)[keyof typeof WEBHOOK_EVENTS];

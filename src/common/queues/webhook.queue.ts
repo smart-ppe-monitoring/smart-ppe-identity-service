@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import { Queue, QueueOptions } from "bullmq";
 import IORedis from "ioredis";
 import { envConfig } from "../../config/env.config";
@@ -14,6 +15,11 @@ export interface WebhookJobData {
   url: string;
   encryptedSecret: string;
   payload: Record<string, unknown>;
+}
+
+export interface WebhookEnqueueOptions {
+  jobId?: string;
+  isRetry?: boolean;
 }
 
 export const WEBHOOK_QUEUE_NAME = "webhook-delivery-queue";
@@ -118,15 +124,52 @@ class WebhookQueueService {
   }
 
   /**
+   * Xóa job cũ đang ở trạng thái failed/completed trong BullMQ (nếu có) để tránh trùng jobId.
+   */
+  async removeFailedJob(jobId: string): Promise<boolean> {
+    if (!this.isRedisAvailable || !this.queue) {
+      return false;
+    }
+
+    try {
+      const existingJob = await this.queue.getJob(jobId);
+      if (!existingJob) {
+        return false;
+      }
+
+      const state = await existingJob.getState();
+      if (state === "failed" || state === "completed") {
+        await existingJob.remove();
+        return true;
+      }
+      return false;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
    * Đẩy job webhook vào hàng đợi BullMQ (hoặc fallback in-memory nếu không có Redis).
    */
-  async enqueue(data: WebhookJobData): Promise<{ jobId: string }> {
+  async enqueue(
+    data: WebhookJobData,
+    options?: WebhookEnqueueOptions,
+  ): Promise<{ jobId: string }> {
+    const targetJobId = options?.jobId
+      ? options.jobId
+      : options?.isRetry
+        ? `${data.deliveryId}-retry-${Date.now()}-${crypto.randomBytes(4).toString("hex")}`
+        : data.deliveryId;
+
     if (this.isRedisAvailable && this.queue) {
       try {
+        if (options?.isRetry) {
+          await this.removeFailedJob(data.deliveryId);
+        }
         const job = await this.queue.add("dispatch-webhook", data, {
-          jobId: data.deliveryId,
+          jobId: targetJobId,
         });
-        return { jobId: job.id || data.deliveryId };
+        return { jobId: job.id || targetJobId };
       } catch {
         // Fallback in-memory
       }
@@ -136,12 +179,12 @@ class WebhookQueueService {
     if (this.inMemoryQueue.length >= 100) {
       this.inMemoryQueue.shift();
     }
-    this.inMemoryQueue.push({ id: data.deliveryId, data, attemptsMade: 0 });
+    this.inMemoryQueue.push({ id: targetJobId, data, attemptsMade: 0 });
 
     // Kích hoạt xử lý có giới hạn đồng thời để bảo vệ outbound sockets
     this.triggerInMemoryProcessing();
 
-    return { jobId: data.deliveryId };
+    return { jobId: targetJobId };
   }
 
   getQueueInstance(): Queue<WebhookJobData> | undefined {

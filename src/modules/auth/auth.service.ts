@@ -74,6 +74,8 @@ import {
   eventBus,
   EventBusService,
 } from "../../common/services/event-bus.service";
+import { WEBHOOK_EVENTS } from "../../common/constants/integration.constant";
+import { integrationService } from "../integration/integration.service";
 import { EVENT_NAMES } from "../../common/constants/event.constant";
 
 export interface RefreshTokenPayload extends jwt.JwtPayload {
@@ -1086,6 +1088,29 @@ export class AuthService {
     }
 
     await this.repository.updateProfile(userId, updatePayload);
+
+    integrationService
+      .dispatchDomainWebhookEvent(
+        WEBHOOK_EVENTS.USER_UPDATED,
+        {
+          event: WEBHOOK_EVENTS.USER_UPDATED,
+          userId,
+          actorId: userId,
+          updatedFields: Object.keys(updatePayload),
+          source: "SELF_PROFILE_UPDATE",
+          updatedAt: new Date().toISOString(),
+        },
+        {
+          scope: "users_or_admins",
+          userIds: [userId],
+        },
+      )
+      .catch((err: any) =>
+        console.warn(
+          "[AuthService] Failed to dispatch user.updated webhook:",
+          err?.message || err,
+        ),
+      );
 
     notificationDispatcher
       .notify(

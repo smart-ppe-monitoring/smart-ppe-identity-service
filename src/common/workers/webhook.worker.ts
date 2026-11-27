@@ -12,6 +12,11 @@ import {
 } from "../helpers/url.helper";
 import { integrationRepository } from "../../modules/integration/integration.repository";
 import {
+  systemConfigService,
+  SystemConfigService,
+} from "../../modules/system-config/system-config.service";
+import { FEATURE_FLAGS } from "../constants/system-config.constant";
+import {
   WEBHOOK_STATUS,
   WEBHOOK_MAX_ATTEMPTS,
   WEBHOOK_SIGNATURE_HEADER,
@@ -106,6 +111,13 @@ function createPinnedFetcher(
 export class WebhookWorker {
   private worker?: Worker<WebhookJobData>;
   private redisConnection?: IORedis;
+
+  constructor(
+    private readonly configService: Pick<
+      SystemConfigService,
+      "isFeatureEnabled"
+    > = systemConfigService,
+  ) {}
 
   start(): void {
     if (!envConfig.redis.enabled || process.env.NODE_ENV === "test") {
@@ -217,7 +229,25 @@ export class WebhookWorker {
       }
     }
 
-    // 2. Decrypt HMAC secret
+    // 2. Feature Flag Guard (FEATURE_FLAGS.WEBHOOKS_ENABLED)
+    const webhooksEnabled = await this.configService.isFeatureEnabled(
+      FEATURE_FLAGS.WEBHOOKS_ENABLED,
+      true,
+    );
+    if (!webhooksEnabled) {
+      const errorMsg =
+        "Webhook delivery skipped: Tính năng Webhook hiện đang tạm khóa bởi quản trị viên";
+      await integrationRepository
+        .updateDeliveryStatus(data.deliveryId, {
+          status: WEBHOOK_STATUS.FAILED,
+          attempts: currentAttempt,
+          lastError: errorMsg,
+        })
+        .catch(() => {});
+      return { success: false, error: errorMsg };
+    }
+
+    // 3. Decrypt HMAC secret
     let plainSecret: string;
     try {
       plainSecret = decryptSecret(data.encryptedSecret);

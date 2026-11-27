@@ -3,8 +3,10 @@ import { IntegrationController } from "./integration.controller";
 import { authMiddleware } from "../../middlewares/auth.middleware";
 import { apiKeyAuthMiddleware } from "../../middlewares/api-key.middleware";
 import { requirePermission } from "../../middlewares/permission.middleware";
+import { requireFeatureFlag } from "../../middlewares/feature-flag.middleware";
 import { validate } from "../../middlewares/validate.middleware";
 import { PERMISSIONS } from "../../common/constants/permission.constant";
+import { FEATURE_FLAGS } from "../../common/constants/system-config.constant";
 import {
   createApiKeySchema,
   apiKeyIdParamSchema,
@@ -98,6 +100,9 @@ router.post(
   "/webhooks/:id/test",
   authMiddleware,
   requirePermission(PERMISSIONS.WEBHOOK_MANAGE),
+  requireFeatureFlag(FEATURE_FLAGS.WEBHOOKS_ENABLED, {
+    message: "Tính năng Webhook hiện đang tạm khóa bởi quản trị viên",
+  }),
   validate(webhookIdParamSchema, "params"),
   controller.testPingWebhook,
 );
@@ -115,6 +120,9 @@ router.post(
   "/webhooks/deliveries/:deliveryId/retry",
   authMiddleware,
   requirePermission(PERMISSIONS.WEBHOOK_MANAGE),
+  requireFeatureFlag(FEATURE_FLAGS.WEBHOOKS_ENABLED, {
+    message: "Tính năng Webhook hiện đang tạm khóa bởi quản trị viên",
+  }),
   validate(deliveryIdParamSchema, "params"),
   controller.retryDelivery,
 );

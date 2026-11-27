@@ -1,8 +1,21 @@
 import { Request, Response, NextFunction } from "express";
-import { IntegrationService } from "./integration.service";
+import {
+  IntegrationService,
+  integrationService,
+  AuditMetadata,
+} from "./integration.service";
 
 export class IntegrationController {
-  private readonly service = new IntegrationService();
+  constructor(
+    private readonly service: IntegrationService = integrationService,
+  ) {}
+
+  private getAuditMetadata(req: Request): AuditMetadata {
+    return {
+      ipAddress: req.ip || req.socket?.remoteAddress,
+      userAgent: req.headers["user-agent"],
+    };
+  }
 
   // ── API Keys Handlers ────────────────────────────────────────────────────────
   createApiKey = async (
@@ -11,7 +24,11 @@ export class IntegrationController {
     next: NextFunction,
   ): Promise<void> => {
     try {
-      const result = await this.service.createApiKey(req.user.id, req.body);
+      const result = await this.service.createApiKey(
+        req.user.id,
+        req.body,
+        this.getAuditMetadata(req),
+      );
       res.status(201).json({
         success: true,
         data: result,
@@ -45,7 +62,11 @@ export class IntegrationController {
     next: NextFunction,
   ): Promise<void> => {
     try {
-      await this.service.deleteApiKey(req.user.id, req.params.id);
+      await this.service.deleteApiKey(
+        req.user.id,
+        req.params.id,
+        this.getAuditMetadata(req),
+      );
       res.json({
         success: true,
         message: "API Key revoked successfully",
@@ -62,10 +83,12 @@ export class IntegrationController {
   ): Promise<void> => {
     try {
       const isActive = req.body.isActive;
-      await this.service.toggleApiKey(req.user.id, req.params.id, isActive, {
-        ipAddress: req.ip,
-        userAgent: req.headers["user-agent"],
-      });
+      await this.service.toggleApiKey(
+        req.user.id,
+        req.params.id,
+        isActive,
+        this.getAuditMetadata(req),
+      );
       res.json({
         success: true,
         message: `API Key ${isActive ? "activated" : "deactivated"} successfully`,
@@ -82,7 +105,11 @@ export class IntegrationController {
     next: NextFunction,
   ): Promise<void> => {
     try {
-      const result = await this.service.createWebhook(req.user.id, req.body);
+      const result = await this.service.createWebhook(
+        req.user.id,
+        req.body,
+        this.getAuditMetadata(req),
+      );
       res.status(201).json({
         success: true,
         data: result,
@@ -135,7 +162,12 @@ export class IntegrationController {
     next: NextFunction,
   ): Promise<void> => {
     try {
-      await this.service.updateWebhook(req.user.id, req.params.id, req.body);
+      await this.service.updateWebhook(
+        req.user.id,
+        req.params.id,
+        req.body,
+        this.getAuditMetadata(req),
+      );
       res.json({
         success: true,
         message: "Webhook endpoint updated successfully",
@@ -151,7 +183,11 @@ export class IntegrationController {
     next: NextFunction,
   ): Promise<void> => {
     try {
-      await this.service.deleteWebhook(req.user.id, req.params.id);
+      await this.service.deleteWebhook(
+        req.user.id,
+        req.params.id,
+        this.getAuditMetadata(req),
+      );
       res.json({
         success: true,
         message: "Webhook endpoint deleted successfully",
@@ -211,6 +247,7 @@ export class IntegrationController {
       const result = await this.service.retryDelivery(
         req.user.id,
         req.params.deliveryId,
+        this.getAuditMetadata(req),
       );
       res.json({
         success: true,
