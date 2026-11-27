@@ -1,5 +1,37 @@
 import { z } from "zod";
 import { MAINTENANCE_STATUS } from "../../common/constants/maintenance.constant";
+import { ROLES } from "../../common/constants/role.constant";
+import { PERMISSIONS } from "../../common/constants/permission.constant";
+import { isValidIpOrCidr } from "../../common/helpers/ip.helper";
+
+const bypassIpItemSchema = z
+  .string()
+  .trim()
+  .min(1, "IP address / subnet cannot be empty")
+  .refine(isValidIpOrCidr, {
+    message: "Invalid IPv4, IPv6, or CIDR format",
+  });
+
+const bypassRolesSchema = z
+  .array(z.string().trim().min(1, "Role name cannot be empty"))
+  .optional();
+
+const bypassPermissionsSchema = z
+  .array(z.string().trim().min(1, "Permission name cannot be empty"))
+  .optional();
+
+function hasAdminAccessAfterBothSpecified(data: {
+  bypassRoles?: string[];
+  bypassPermissions?: string[];
+}): boolean {
+  if (data.bypassRoles !== undefined && data.bypassPermissions !== undefined) {
+    return (
+      data.bypassRoles.includes(ROLES.ADMIN) ||
+      data.bypassPermissions.includes(PERMISSIONS.MAINTENANCE_MANAGE)
+    );
+  }
+  return true;
+}
 
 export const enableMaintenanceSchema = z
   .object({
@@ -27,15 +59,9 @@ export const enableMaintenanceSchema = z
       })
       .nullable()
       .optional(),
-    bypassPermissions: z
-      .array(z.string().min(1, "Permission name cannot be empty"))
-      .optional(),
-    bypassRoles: z
-      .array(z.string().min(1, "Role name cannot be empty"))
-      .optional(),
-    bypassIps: z
-      .array(z.string().trim().min(1, "IP address / subnet cannot be empty"))
-      .optional(),
+    bypassPermissions: bypassPermissionsSchema,
+    bypassRoles: bypassRolesSchema,
+    bypassIps: z.array(bypassIpItemSchema).optional(),
     status: z
       .enum([MAINTENANCE_STATUS.MAINTENANCE, MAINTENANCE_STATUS.READ_ONLY])
       .optional(),
@@ -54,7 +80,11 @@ export const enableMaintenanceSchema = z
       message: "estimatedEndAt must be after startAt",
       path: ["estimatedEndAt"],
     },
-  );
+  )
+  .refine(hasAdminAccessAfterBothSpecified, {
+    message: `Anti-lockout guard: at least ${ROLES.ADMIN} in bypassRoles or ${PERMISSIONS.MAINTENANCE_MANAGE} in bypassPermissions must remain`,
+    path: ["bypassRoles"],
+  });
 
 export const updateMaintenanceSchema = z
   .object({
@@ -90,15 +120,9 @@ export const updateMaintenanceSchema = z
       })
       .nullable()
       .optional(),
-    bypassPermissions: z
-      .array(z.string().min(1, "Permission name cannot be empty"))
-      .optional(),
-    bypassRoles: z
-      .array(z.string().min(1, "Role name cannot be empty"))
-      .optional(),
-    bypassIps: z
-      .array(z.string().trim().min(1, "IP address / subnet cannot be empty"))
-      .optional(),
+    bypassPermissions: bypassPermissionsSchema,
+    bypassRoles: bypassRolesSchema,
+    bypassIps: z.array(bypassIpItemSchema).optional(),
   })
   .refine(
     (data) => {
@@ -114,4 +138,8 @@ export const updateMaintenanceSchema = z
       message: "estimatedEndAt must be after startAt",
       path: ["estimatedEndAt"],
     },
-  );
+  )
+  .refine(hasAdminAccessAfterBothSpecified, {
+    message: `Anti-lockout guard: at least ${ROLES.ADMIN} in bypassRoles or ${PERMISSIONS.MAINTENANCE_MANAGE} in bypassPermissions must remain`,
+    path: ["bypassRoles"],
+  });

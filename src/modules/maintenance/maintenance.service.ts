@@ -20,12 +20,54 @@ import {
   MAINTENANCE_STATUS,
   MaintenanceStatus,
 } from "../../common/constants/maintenance.constant";
+import { ROLES } from "../../common/constants/role.constant";
+import { PERMISSIONS } from "../../common/constants/permission.constant";
+import { AppError } from "../../common/errors/app-error";
+import { ERROR_CODE } from "../../common/errors/error-code";
+import { isValidIpOrCidr } from "../../common/helpers/ip.helper";
 
 export class MaintenanceService {
   constructor(
     private repo: MaintenanceRepository = maintenanceRepository,
     private cacheService: MaintenanceCacheService = maintenanceCacheService,
   ) {}
+
+  private normalizeStringArray(value: unknown): string[] {
+    if (!Array.isArray(value)) return [];
+    return value
+      .filter((item): item is string => typeof item === "string")
+      .map((item) => item.trim())
+      .filter((item) => item.length > 0);
+  }
+
+  private assertValidBypassIps(bypassIps: string[]): void {
+    for (const ip of bypassIps) {
+      if (!isValidIpOrCidr(ip)) {
+        throw new AppError(
+          `Địa chỉ IP/CIDR miễn trừ không hợp lệ: '${ip}'`,
+          400,
+          ERROR_CODE.VALIDATION_ERROR,
+        );
+      }
+    }
+  }
+
+  private assertAdminAntiLockout(
+    bypassRoles: string[],
+    bypassPermissions: string[],
+  ): void {
+    const hasAdminRole = bypassRoles.includes(ROLES.ADMIN);
+    const hasManagePerm = bypassPermissions.includes(
+      PERMISSIONS.MAINTENANCE_MANAGE,
+    );
+    if (!hasAdminRole && !hasManagePerm) {
+      throw new AppError(
+        `Không thể gỡ bỏ hoàn toàn quyền truy cập quản trị khi bảo trì: cần giữ lại ít nhất vai trò ${ROLES.ADMIN} trong bypassRoles hoặc quyền ${PERMISSIONS.MAINTENANCE_MANAGE} trong bypassPermissions`,
+        400,
+        ERROR_CODE.VALIDATION_ERROR,
+      );
+    }
+  }
 
   async getConfig(key = "DEFAULT") {
     const config = await this.repo.getOrCreateDefaultConfig(key);
@@ -58,12 +100,53 @@ export class MaintenanceService {
           ? new Date(dto.startAt)
           : null
         : new Date();
+    const referenceMs = startAt ? startAt.getTime() : Date.now();
+    const previousEstimatedEndAt = previousConfig.estimatedEndAt
+      ? new Date(previousConfig.estimatedEndAt)
+      : null;
+    const inheritedEstimatedEndAt =
+      previousEstimatedEndAt && previousEstimatedEndAt.getTime() > referenceMs
+        ? previousEstimatedEndAt
+        : null;
+
     const estimatedEndAt =
       dto.estimatedEndAt !== undefined
         ? dto.estimatedEndAt
           ? new Date(dto.estimatedEndAt)
           : null
-        : previousConfig.estimatedEndAt;
+        : inheritedEstimatedEndAt;
+
+    if (
+      dto.estimatedEndAt !== undefined &&
+      startAt &&
+      estimatedEndAt &&
+      estimatedEndAt.getTime() <= startAt.getTime()
+    ) {
+      throw new AppError(
+        "estimatedEndAt must be after startAt",
+        400,
+        ERROR_CODE.VALIDATION_ERROR,
+      );
+    }
+
+    const nextBypassPermissions = this.normalizeStringArray(
+      dto.bypassPermissions !== undefined
+        ? dto.bypassPermissions
+        : previousConfig.bypassPermissions,
+    );
+    const nextBypassRoles = this.normalizeStringArray(
+      dto.bypassRoles !== undefined
+        ? dto.bypassRoles
+        : previousConfig.bypassRoles,
+    );
+    this.assertAdminAntiLockout(nextBypassRoles, nextBypassPermissions);
+
+    const nextBypassIps = this.normalizeStringArray(
+      dto.bypassIps !== undefined ? dto.bypassIps : previousConfig.bypassIps,
+    );
+    if (dto.bypassIps !== undefined) {
+      this.assertValidBypassIps(nextBypassIps);
+    }
 
     const newStatus = dto.status || MAINTENANCE_STATUS.MAINTENANCE;
 
@@ -74,11 +157,9 @@ export class MaintenanceService {
       message: dto.message ?? previousConfig.message,
       startAt,
       estimatedEndAt,
-      bypassPermissions: (dto.bypassPermissions ??
-        (previousConfig.bypassPermissions as any)) as any,
-      bypassRoles: (dto.bypassRoles ??
-        (previousConfig.bypassRoles as any)) as any,
-      bypassIps: (dto.bypassIps ?? (previousConfig.bypassIps as any)) as any,
+      bypassPermissions: nextBypassPermissions as any,
+      bypassRoles: nextBypassRoles as any,
+      bypassIps: nextBypassIps as any,
     });
 
     this.cacheService.invalidate();
@@ -150,18 +231,56 @@ export class MaintenanceService {
         : MAINTENANCE_STATUS.ONLINE;
     }
 
+    const isTurningOff = Boolean(previousConfig.enabled) && !enabled;
+
     const startAt =
       dto.startAt !== undefined
         ? dto.startAt
           ? new Date(dto.startAt)
           : null
-        : previousConfig.startAt;
+        : isTurningOff
+          ? null
+          : previousConfig.startAt;
     const estimatedEndAt =
       dto.estimatedEndAt !== undefined
         ? dto.estimatedEndAt
           ? new Date(dto.estimatedEndAt)
           : null
-        : previousConfig.estimatedEndAt;
+        : isTurningOff
+          ? null
+          : previousConfig.estimatedEndAt;
+
+    if (
+      (dto.startAt !== undefined || dto.estimatedEndAt !== undefined) &&
+      startAt &&
+      estimatedEndAt &&
+      estimatedEndAt.getTime() <= startAt.getTime()
+    ) {
+      throw new AppError(
+        "estimatedEndAt must be after startAt",
+        400,
+        ERROR_CODE.VALIDATION_ERROR,
+      );
+    }
+
+    const nextBypassPermissions = this.normalizeStringArray(
+      dto.bypassPermissions !== undefined
+        ? dto.bypassPermissions
+        : previousConfig.bypassPermissions,
+    );
+    const nextBypassRoles = this.normalizeStringArray(
+      dto.bypassRoles !== undefined
+        ? dto.bypassRoles
+        : previousConfig.bypassRoles,
+    );
+    this.assertAdminAntiLockout(nextBypassRoles, nextBypassPermissions);
+
+    const nextBypassIps = this.normalizeStringArray(
+      dto.bypassIps !== undefined ? dto.bypassIps : previousConfig.bypassIps,
+    );
+    if (dto.bypassIps !== undefined) {
+      this.assertValidBypassIps(nextBypassIps);
+    }
 
     const updatedConfig = await this.repo.updateConfig(previousConfig.key, {
       enabled,
@@ -170,11 +289,9 @@ export class MaintenanceService {
       message: dto.message ?? previousConfig.message,
       startAt,
       estimatedEndAt,
-      bypassPermissions: (dto.bypassPermissions ??
-        (previousConfig.bypassPermissions as any)) as any,
-      bypassRoles: (dto.bypassRoles ??
-        (previousConfig.bypassRoles as any)) as any,
-      bypassIps: (dto.bypassIps ?? (previousConfig.bypassIps as any)) as any,
+      bypassPermissions: nextBypassPermissions as any,
+      bypassRoles: nextBypassRoles as any,
+      bypassIps: nextBypassIps as any,
     });
 
     this.cacheService.invalidate();
@@ -233,20 +350,26 @@ export class MaintenanceService {
     const updatedConfig = await this.repo.updateConfig(previousConfig.key, {
       enabled: false,
       status: MAINTENANCE_STATUS.ONLINE,
+      startAt: null,
+      estimatedEndAt: null,
     });
 
     this.cacheService.invalidate();
 
-    // Broadcast SSE event
+    // Broadcast SSE event nhất quán với trạng thái đã lưu trong CSDL
     sseManagerService.broadcast({
       type: "system:maintenance",
       data: {
-        enabled: false,
-        status: MAINTENANCE_STATUS.ONLINE,
+        enabled: updatedConfig.enabled,
+        status: updatedConfig.status,
         title: updatedConfig.title,
         message: updatedConfig.message,
-        startAt: null,
-        estimatedEndAt: null,
+        startAt: updatedConfig.startAt
+          ? updatedConfig.startAt.toISOString()
+          : null,
+        estimatedEndAt: updatedConfig.estimatedEndAt
+          ? updatedConfig.estimatedEndAt.toISOString()
+          : null,
       },
     });
 
@@ -260,10 +383,14 @@ export class MaintenanceService {
         previous: {
           enabled: previousConfig.enabled,
           status: previousConfig.status,
+          startAt: previousConfig.startAt,
+          estimatedEndAt: previousConfig.estimatedEndAt,
         },
         current: {
-          enabled: false,
-          status: MAINTENANCE_STATUS.ONLINE,
+          enabled: updatedConfig.enabled,
+          status: updatedConfig.status,
+          startAt: updatedConfig.startAt,
+          estimatedEndAt: updatedConfig.estimatedEndAt,
         },
       },
       ipAddress: context?.ipAddress,
