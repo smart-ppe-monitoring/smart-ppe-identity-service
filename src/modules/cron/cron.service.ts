@@ -5,7 +5,10 @@ import { R2Service } from "../../common/services/r2.service";
 import { notificationDispatcher } from "../../common/services/notification-dispatcher.service";
 import {
   CRON_JOB_NAMES,
+  CRON_JOB_STATUS,
+  CRON_TRIGGER_SOURCE,
   CronJobName,
+  CronJobStatus,
   CronScheduleConfig,
   DEFAULT_CRON_PARAMS,
   DEFAULT_CRON_SCHEDULES,
@@ -31,6 +34,7 @@ import {
   CronJobDefaultParamsDto,
   CronJobExecutionResultDto,
   CronJobItemDto,
+  CronJobLastExecutionDto,
   StoredCronJobConfig,
   ToggleCronJobResultDto,
   UpdateCronJobDto,
@@ -55,11 +59,20 @@ export class CronService {
     ]),
   );
   private configsLoaded = false;
+  private configsLoadPromise?: Promise<void>;
+  private readonly lastExecutions = new Map<
+    CronJobName,
+    CronJobLastExecutionDto
+  >();
 
   constructor(
     private readonly repository: CronRepository = cronRepository,
     private readonly r2Service: R2Service = new R2Service(),
     private readonly cronQueueService: CronQueueService = cronQueue,
+    private readonly notifier: Pick<
+      typeof notificationDispatcher,
+      "send"
+    > = notificationDispatcher,
   ) {}
 
   private sanitizeDefaultParams(
@@ -118,48 +131,114 @@ export class CronService {
 
   private async ensureConfigsLoaded(): Promise<void> {
     if (this.configsLoaded) return;
-    this.configsLoaded = true;
+    if (this.configsLoadPromise) {
+      return this.configsLoadPromise;
+    }
 
     if (typeof (this.repository as any).findAllJobConfigs !== "function") {
+      this.configsLoaded = true;
       return;
     }
 
-    const storedMap = await (this.repository as any).findAllJobConfigs();
-    if (!storedMap || typeof storedMap !== "object") {
-      return;
+    let loadPromise!: Promise<void>;
+    loadPromise = (async () => {
+      try {
+        const storedMap = await (this.repository as any).findAllJobConfigs();
+        if (storedMap && typeof storedMap === "object") {
+          for (const jobName of Object.keys(
+            DEFAULT_CRON_SCHEDULES,
+          ) as CronJobName[]) {
+            const stored = storedMap[jobName];
+            if (!stored || typeof stored !== "object") continue;
+
+            const current = this.jobConfigs.get(jobName)!;
+            const mergedParams =
+              stored.defaultParams && typeof stored.defaultParams === "object"
+                ? { ...current.defaultParams, ...stored.defaultParams }
+                : current.defaultParams;
+
+            this.jobConfigs.set(jobName, {
+              cron:
+                typeof stored.cron === "string" && stored.cron.trim()
+                  ? stored.cron.trim()
+                  : current.cron,
+              description:
+                typeof stored.description === "string" &&
+                stored.description.trim()
+                  ? stored.description.trim()
+                  : current.description,
+              isEnabled:
+                typeof stored.isEnabled === "boolean"
+                  ? stored.isEnabled
+                  : current.isEnabled,
+              defaultParams: mergedParams,
+            });
+          }
+        }
+        this.configsLoaded = true;
+      } catch (err: any) {
+        this.configsLoaded = false;
+        console.warn(
+          "[CronService] Failed to load cron job configs from DB:",
+          err?.message || err,
+        );
+      } finally {
+        if (this.configsLoadPromise === loadPromise) {
+          this.configsLoadPromise = undefined;
+        }
+      }
+    })();
+
+    this.configsLoadPromise = loadPromise;
+    return loadPromise;
+  }
+
+  private recordExecution(jobName: CronJobName, status: CronJobStatus): void {
+    this.lastExecutions.set(jobName, {
+      lastRunAt: new Date().toISOString(),
+      lastStatus: status,
+    });
+  }
+
+  private async getLatestExecutionsMap(): Promise<
+    Partial<Record<CronJobName, CronJobLastExecutionDto>>
+  > {
+    const merged: Partial<Record<CronJobName, CronJobLastExecutionDto>> = {};
+    if (
+      typeof (this.repository as any).findLatestJobExecutions === "function"
+    ) {
+      try {
+        const persisted = await (
+          this.repository as any
+        ).findLatestJobExecutions();
+        if (persisted && typeof persisted === "object") {
+          Object.assign(merged, persisted);
+        }
+      } catch (err: any) {
+        console.warn(
+          "[CronService] Failed to load latest job executions:",
+          err?.message || err,
+        );
+      }
     }
 
-    for (const jobName of Object.keys(DEFAULT_CRON_SCHEDULES) as CronJobName[]) {
-      const stored = storedMap[jobName];
-      if (!stored || typeof stored !== "object") continue;
-
-      const current = this.jobConfigs.get(jobName)!;
-      const mergedParams =
-        stored.defaultParams && typeof stored.defaultParams === "object"
-          ? { ...current.defaultParams, ...stored.defaultParams }
-          : current.defaultParams;
-
-      this.jobConfigs.set(jobName, {
-        cron:
-          typeof stored.cron === "string" && stored.cron.trim()
-            ? stored.cron.trim()
-            : current.cron,
-        description:
-          typeof stored.description === "string" && stored.description.trim()
-            ? stored.description.trim()
-            : current.description,
-        isEnabled:
-          typeof stored.isEnabled === "boolean"
-            ? stored.isEnabled
-            : current.isEnabled,
-        defaultParams: mergedParams,
-      });
+    for (const [jobName, memExec] of this.lastExecutions.entries()) {
+      const existing = merged[jobName];
+      if (
+        !existing ||
+        Date.parse(memExec.lastRunAt) >= Date.parse(existing.lastRunAt)
+      ) {
+        merged[jobName] = memExec;
+      }
     }
+
+    return merged;
   }
 
   private toJobItemDto(
     jobName: CronJobName,
     config: StoredCronJobConfig,
+    execution?: CronJobLastExecutionDto | null,
   ): CronJobItemDto {
     const schedule: CronScheduleConfig = parseScheduleFromCron(config.cron);
     return {
@@ -170,7 +249,9 @@ export class CronService {
       description: config.description,
       isEnabled: config.isEnabled,
       defaultParams: { ...config.defaultParams },
-      lastStatus: "READY",
+      ...(execution ? { lastRun: execution.lastRunAt } : {}),
+      lastRunAt: execution?.lastRunAt ?? null,
+      lastStatus: execution?.lastStatus ?? CRON_JOB_STATUS.READY,
     };
   }
 
@@ -202,10 +283,17 @@ export class CronService {
    */
   async listJobs(search?: string): Promise<CronJobItemDto[]> {
     await this.ensureConfigsLoaded();
+    const latestExecutions = await this.getLatestExecutionsMap();
 
     const jobs: CronJobItemDto[] = (
       Object.keys(DEFAULT_CRON_SCHEDULES) as CronJobName[]
-    ).map((name) => this.toJobItemDto(name, this.jobConfigs.get(name)!));
+    ).map((name) =>
+      this.toJobItemDto(
+        name,
+        this.jobConfigs.get(name)!,
+        latestExecutions[name] ?? null,
+      ),
+    );
 
     if (search) {
       const lower = search.toLowerCase();
@@ -288,7 +376,12 @@ export class CronService {
       userAgent: actorContext?.userAgent,
     });
 
-    return this.toJobItemDto(jobName, nextConfig);
+    const latestExecutions = await this.getLatestExecutionsMap();
+    return this.toJobItemDto(
+      jobName,
+      nextConfig,
+      latestExecutions[jobName] ?? null,
+    );
   }
 
   /**
@@ -344,6 +437,7 @@ export class CronService {
    */
   async executeAuditLogCleanup(
     retentionDays = DEFAULT_AUDIT_LOG_RETENTION_DAYS,
+    options?: { skipAuditLog?: boolean },
   ): Promise<{
     deletedCount: number;
     retentionDays: number;
@@ -364,17 +458,23 @@ export class CronService {
     const deletedCount =
       await this.repository.deleteAuditLogsOlderThan(cutoffDate);
 
-    // Ghi audit log hệ thống về việc dọn dẹp
-    await this.repository.createAuditLog({
-      action: AUDIT_ACTION.CLEANUP_AUDIT_LOGS,
-      targetType: AUDIT_TARGET_TYPE.CRON_JOB,
-      targetId: CRON_JOB_NAMES.CLEANUP_AUDIT_LOGS,
-      details: {
-        deletedCount,
-        retentionDays,
-        cutoffDate: cutoffDate.toISOString(),
-      },
-    });
+    if (!options?.skipAuditLog) {
+      this.recordExecution(
+        CRON_JOB_NAMES.CLEANUP_AUDIT_LOGS,
+        CRON_JOB_STATUS.SUCCESS,
+      );
+      await this.repository.createAuditLog({
+        action: AUDIT_ACTION.CLEANUP_AUDIT_LOGS,
+        targetType: AUDIT_TARGET_TYPE.CRON_JOB,
+        targetId: CRON_JOB_NAMES.CLEANUP_AUDIT_LOGS,
+        details: {
+          status: CRON_JOB_STATUS.SUCCESS,
+          deletedCount,
+          retentionDays,
+          cutoffDate: cutoffDate.toISOString(),
+        },
+      });
+    }
 
     return {
       deletedCount,
@@ -388,10 +488,13 @@ export class CronService {
    */
   async executeUploadsCleanup(
     maxAgeHours = DEFAULT_UNCONFIRMED_UPLOAD_MAX_AGE_HOURS,
+    options?: { skipAuditLog?: boolean },
   ): Promise<{
     scannedCount: number;
     deletedCount: number;
+    failedCount: number;
     deletedKeys: string[];
+    failedKeys: string[];
   }> {
     const now = Date.now();
     const maxAgeMs = maxAgeHours * 60 * 60 * 1000;
@@ -399,7 +502,19 @@ export class CronService {
     // Lấy toàn bộ danh sách file trong thư mục avatars/
     const objects = await this.r2Service.listObjects("avatars/");
     if (objects.length === 0) {
-      return { scannedCount: 0, deletedCount: 0, deletedKeys: [] };
+      if (!options?.skipAuditLog) {
+        this.recordExecution(
+          CRON_JOB_NAMES.CLEANUP_UNCONFIRMED_UPLOADS,
+          CRON_JOB_STATUS.SUCCESS,
+        );
+      }
+      return {
+        scannedCount: 0,
+        deletedCount: 0,
+        failedCount: 0,
+        deletedKeys: [],
+        failedKeys: [],
+      };
     }
 
     // Lấy toàn bộ các avatarUrl đang được User trong cơ sở dữ liệu liên kết
@@ -414,7 +529,7 @@ export class CronService {
       }
     }
 
-    const deletedKeys: string[] = [];
+    const candidateKeys: string[] = [];
 
     for (const obj of objects) {
       // Nếu file chưa từng được liên kết với bất kỳ User nào và đã tồn tại quá maxAgeHours
@@ -424,49 +539,90 @@ export class CronService {
         : false;
 
       if (isOrphaned && isOldEnough) {
-        deletedKeys.push(obj.key);
+        candidateKeys.push(obj.key);
       }
     }
 
-    if (deletedKeys.length > 0) {
+    let deletedKeys: string[] = [];
+    let failedKeys: string[] = [];
+
+    if (candidateKeys.length > 0) {
       if (typeof this.r2Service.deleteFiles === "function") {
-        await this.r2Service.deleteFiles(deletedKeys).catch((err: any) => {
+        try {
+          const batchResult = await (this.r2Service.deleteFiles as any)(
+            candidateKeys,
+          );
+          if (
+            batchResult &&
+            Array.isArray(batchResult.deletedKeys) &&
+            Array.isArray(batchResult.failedKeys)
+          ) {
+            deletedKeys = batchResult.deletedKeys;
+            failedKeys = batchResult.failedKeys;
+          } else {
+            deletedKeys = [...candidateKeys];
+          }
+        } catch (err: any) {
           console.warn(
             `[CronService] Failed to batch delete orphaned files:`,
-            err.message,
+            err?.message || err,
           );
-        });
+          deletedKeys = [];
+          failedKeys = [...candidateKeys];
+        }
       } else {
-        for (const key of deletedKeys) {
-          await this.r2Service.deleteFile(key).catch(() => {});
+        for (const key of candidateKeys) {
+          try {
+            await this.r2Service.deleteFile(key);
+            deletedKeys.push(key);
+          } catch (err: any) {
+            console.warn(
+              `[CronService] Failed to delete orphaned file '${key}':`,
+              err?.message || err,
+            );
+            failedKeys.push(key);
+          }
         }
       }
     }
 
-    if (deletedKeys.length > 0) {
-      await this.repository.createAuditLog({
-        action: AUDIT_ACTION.CLEANUP_UNCONFIRMED_UPLOADS,
-        targetType: AUDIT_TARGET_TYPE.CRON_JOB,
-        targetId: CRON_JOB_NAMES.CLEANUP_UNCONFIRMED_UPLOADS,
-        details: {
-          scannedCount: objects.length,
-          deletedCount: deletedKeys.length,
-          maxAgeHours,
-        },
-      });
+    if (!options?.skipAuditLog) {
+      const status =
+        failedKeys.length > 0 && deletedKeys.length === 0
+          ? CRON_JOB_STATUS.FAILED
+          : CRON_JOB_STATUS.SUCCESS;
+      this.recordExecution(CRON_JOB_NAMES.CLEANUP_UNCONFIRMED_UPLOADS, status);
+      if (deletedKeys.length > 0 || failedKeys.length > 0) {
+        await this.repository.createAuditLog({
+          action: AUDIT_ACTION.CLEANUP_UNCONFIRMED_UPLOADS,
+          targetType: AUDIT_TARGET_TYPE.CRON_JOB,
+          targetId: CRON_JOB_NAMES.CLEANUP_UNCONFIRMED_UPLOADS,
+          details: {
+            status,
+            scannedCount: objects.length,
+            deletedCount: deletedKeys.length,
+            failedCount: failedKeys.length,
+            maxAgeHours,
+          },
+        });
+      }
     }
 
     return {
       scannedCount: objects.length,
       deletedCount: deletedKeys.length,
+      failedCount: failedKeys.length,
       deletedKeys,
+      failedKeys,
     };
   }
 
   /**
    * 3. Dọn dẹp định kỳ các Token xác thực và phiên đã hết hạn
    */
-  async executeExpiredTokensCleanup(): Promise<{
+  async executeExpiredTokensCleanup(options?: {
+    skipAuditLog?: boolean;
+  }): Promise<{
     refreshTokensCount: number;
     verificationTokensCount: number;
     passwordResetTokensCount: number;
@@ -487,13 +643,24 @@ export class CronService {
       result.passwordResetTokensCount +
       outboxDeleted;
 
-    if (totalDeleted > 0) {
-      await this.repository.createAuditLog({
-        action: AUDIT_ACTION.CLEANUP_EXPIRED_TOKENS,
-        targetType: AUDIT_TARGET_TYPE.CRON_JOB,
-        targetId: CRON_JOB_NAMES.CLEANUP_EXPIRED_TOKENS,
-        details: { ...result, outboxDeleted, totalDeleted },
-      });
+    if (!options?.skipAuditLog) {
+      this.recordExecution(
+        CRON_JOB_NAMES.CLEANUP_EXPIRED_TOKENS,
+        CRON_JOB_STATUS.SUCCESS,
+      );
+      if (totalDeleted > 0) {
+        await this.repository.createAuditLog({
+          action: AUDIT_ACTION.CLEANUP_EXPIRED_TOKENS,
+          targetType: AUDIT_TARGET_TYPE.CRON_JOB,
+          targetId: CRON_JOB_NAMES.CLEANUP_EXPIRED_TOKENS,
+          details: {
+            status: CRON_JOB_STATUS.SUCCESS,
+            ...result,
+            outboxDeleted,
+            totalDeleted,
+          },
+        });
+      }
     }
 
     return {
@@ -505,12 +672,17 @@ export class CronService {
   /**
    * 4. Tổng hợp hoạt động định kỳ (Hàng ngày / Hàng tuần) và gửi email báo cáo tới Quản trị viên
    */
-  async executeSummaryDigest(options: { period: "DAILY" | "WEEKLY" }): Promise<{
+  async executeSummaryDigest(options: {
+    period: "DAILY" | "WEEKLY";
+    skipAuditLog?: boolean;
+  }): Promise<{
     period: "DAILY" | "WEEKLY";
     startDate: string;
     endDate: string;
     stats: any;
     recipientCount: number;
+    failedCount: number;
+    skippedCount: number;
   }> {
     const durationDays = options.period === "WEEKLY" ? 7 : 1;
     const prevDate = new Date(Date.now() - durationDays * 24 * 60 * 60 * 1000);
@@ -526,60 +698,95 @@ export class CronService {
     const admins = await this.repository.findAdminUsers();
 
     const periodText = options.period === "WEEKLY" ? "Hàng tuần" : "Hàng ngày";
+    let sentCount = 0;
+    let failedCount = 0;
+    let skippedCount = 0;
 
     for (const admin of admins) {
-      if (admin.email) {
-        await notificationDispatcher
-          .send({
-            userId: admin.id,
-            channels: [NOTIFICATION_CHANNEL.EMAIL],
-            email: {
-              toEmail: admin.email,
-              templateKey: EMAIL_TEMPLATE_KEY.ACTIVITY_SUMMARY_DIGEST,
-              templateData: {
-                period: periodText,
-                startDate: startDateStr,
-                endDate: endDateStr,
-                ...stats,
-              },
+      const email = typeof admin.email === "string" ? admin.email.trim() : "";
+      if (!email) {
+        skippedCount += 1;
+        continue;
+      }
+
+      try {
+        const dispatched = await (this.notifier.send as any)({
+          userId: admin.id,
+          channels: [NOTIFICATION_CHANNEL.EMAIL],
+          email: {
+            toEmail: email,
+            templateKey: EMAIL_TEMPLATE_KEY.ACTIVITY_SUMMARY_DIGEST,
+            templateData: {
+              period: periodText,
+              startDate: startDateStr,
+              endDate: endDateStr,
+              ...stats,
             },
-          })
-          .catch((err: any) => {
-            console.warn(
-              `[CronService] Failed to send digest email to ${admin.email}:`,
-              err.message,
-            );
-          });
+          },
+        });
+        if (dispatched === false) {
+          skippedCount += 1;
+        } else {
+          sentCount += 1;
+        }
+      } catch (err: any) {
+        failedCount += 1;
+        console.warn(
+          `[CronService] Failed to send digest email to ${email}:`,
+          err?.message || err,
+        );
       }
     }
 
-    await this.repository.createAuditLog({
-      action: AUDIT_ACTION.SEND_SUMMARY_DIGEST,
-      targetType: AUDIT_TARGET_TYPE.CRON_JOB,
-      targetId:
-        options.period === "WEEKLY"
-          ? CRON_JOB_NAMES.WEEKLY_SUMMARY_DIGEST
-          : CRON_JOB_NAMES.DAILY_SUMMARY_DIGEST,
-      details: { period: options.period, stats, recipientCount: admins.length },
-    });
+    const digestJobName =
+      options.period === "WEEKLY"
+        ? CRON_JOB_NAMES.WEEKLY_SUMMARY_DIGEST
+        : CRON_JOB_NAMES.DAILY_SUMMARY_DIGEST;
+
+    if (!options.skipAuditLog) {
+      this.recordExecution(digestJobName, CRON_JOB_STATUS.SUCCESS);
+      await this.repository.createAuditLog({
+        action: AUDIT_ACTION.SEND_SUMMARY_DIGEST,
+        targetType: AUDIT_TARGET_TYPE.CRON_JOB,
+        targetId: digestJobName,
+        details: {
+          status: CRON_JOB_STATUS.SUCCESS,
+          period: options.period,
+          stats,
+          recipientCount: sentCount,
+          failedCount,
+          skippedCount,
+        },
+      });
+    }
 
     return {
       period: options.period,
       startDate: startDate.toISOString(),
       endDate: endDate.toISOString(),
       stats,
-      recipientCount: admins.length,
+      recipientCount: sentCount,
+      failedCount,
+      skippedCount,
     };
   }
 
   /**
-   * Kích hoạt chạy ngay một Cron Job bất kỳ (Manual trigger từ Admin)
+   * Kích hoạt chạy ngay một Cron Job bất kỳ (Manual trigger từ Admin hoặc Scheduled từ BullMQ Worker)
    */
   async triggerJob(
     jobName: CronJobName,
     params: Record<string, unknown> = {},
     actorContext?: { actorId?: string; ipAddress?: string; userAgent?: string },
   ): Promise<CronJobExecutionResultDto> {
+    if (!DEFAULT_CRON_SCHEDULES[jobName]) {
+      throw new AppError(
+        `Job name '${jobName}' không được hỗ trợ`,
+        400,
+        ERROR_CODE.VALIDATION_ERROR,
+      );
+    }
+
     await this.ensureConfigsLoaded();
     const configuredDefaults =
       this.jobConfigs.get(jobName)?.defaultParams || {};
@@ -587,57 +794,96 @@ export class CronService {
       ...configuredDefaults,
       ...params,
     };
+    const triggerSource = actorContext?.actorId
+      ? CRON_TRIGGER_SOURCE.MANUAL
+      : CRON_TRIGGER_SOURCE.SCHEDULED;
 
     const startTime = Date.now();
-
     let executionData: Record<string, unknown> | undefined;
 
-    switch (jobName) {
-      case CRON_JOB_NAMES.CLEANUP_AUDIT_LOGS: {
-        const days =
-          typeof effectiveParams["retentionDays"] === "number"
-            ? effectiveParams["retentionDays"]
-            : DEFAULT_AUDIT_LOG_RETENTION_DAYS;
-        executionData = await this.executeAuditLogCleanup(days);
-        break;
+    try {
+      switch (jobName) {
+        case CRON_JOB_NAMES.CLEANUP_AUDIT_LOGS: {
+          const days =
+            typeof effectiveParams["retentionDays"] === "number"
+              ? effectiveParams["retentionDays"]
+              : DEFAULT_AUDIT_LOG_RETENTION_DAYS;
+          executionData = await this.executeAuditLogCleanup(days, {
+            skipAuditLog: true,
+          });
+          break;
+        }
+        case CRON_JOB_NAMES.CLEANUP_UNCONFIRMED_UPLOADS: {
+          const hours =
+            typeof effectiveParams["maxAgeHours"] === "number"
+              ? effectiveParams["maxAgeHours"]
+              : DEFAULT_UNCONFIRMED_UPLOAD_MAX_AGE_HOURS;
+          executionData = await this.executeUploadsCleanup(hours, {
+            skipAuditLog: true,
+          });
+          break;
+        }
+        case CRON_JOB_NAMES.CLEANUP_EXPIRED_TOKENS: {
+          executionData = await this.executeExpiredTokensCleanup({
+            skipAuditLog: true,
+          });
+          break;
+        }
+        case CRON_JOB_NAMES.DAILY_SUMMARY_DIGEST: {
+          executionData = await this.executeSummaryDigest({
+            period: "DAILY",
+            skipAuditLog: true,
+          });
+          break;
+        }
+        case CRON_JOB_NAMES.WEEKLY_SUMMARY_DIGEST: {
+          executionData = await this.executeSummaryDigest({
+            period: "WEEKLY",
+            skipAuditLog: true,
+          });
+          break;
+        }
       }
-      case CRON_JOB_NAMES.CLEANUP_UNCONFIRMED_UPLOADS: {
-        const hours =
-          typeof effectiveParams["maxAgeHours"] === "number"
-            ? effectiveParams["maxAgeHours"]
-            : DEFAULT_UNCONFIRMED_UPLOAD_MAX_AGE_HOURS;
-        executionData = await this.executeUploadsCleanup(hours);
-        break;
+    } catch (err: any) {
+      if (!(err instanceof AppError && err.code === ERROR_CODE.VALIDATION_ERROR)) {
+        this.recordExecution(jobName, CRON_JOB_STATUS.FAILED);
+        await this.repository
+          .createAuditLog({
+            actorId: actorContext?.actorId,
+            action: AUDIT_ACTION.TRIGGER_CRON_JOB,
+            targetType: AUDIT_TARGET_TYPE.CRON_JOB,
+            targetId: jobName,
+            details: {
+              status: CRON_JOB_STATUS.FAILED,
+              triggerSource,
+              params: effectiveParams,
+              durationMs: Date.now() - startTime,
+              error: err?.message || "Cron job execution failed",
+            },
+            ipAddress: actorContext?.ipAddress,
+            userAgent: actorContext?.userAgent,
+          })
+          .catch(() => {});
       }
-      case CRON_JOB_NAMES.CLEANUP_EXPIRED_TOKENS: {
-        executionData = await this.executeExpiredTokensCleanup();
-        break;
-      }
-      case CRON_JOB_NAMES.DAILY_SUMMARY_DIGEST: {
-        executionData = await this.executeSummaryDigest({ period: "DAILY" });
-        break;
-      }
-      case CRON_JOB_NAMES.WEEKLY_SUMMARY_DIGEST: {
-        executionData = await this.executeSummaryDigest({ period: "WEEKLY" });
-        break;
-      }
-      default:
-        throw new AppError(
-          `Job name '${jobName}' không được hỗ trợ`,
-          400,
-          ERROR_CODE.VALIDATION_ERROR,
-        );
+      throw err;
     }
 
     const durationMs = Date.now() - startTime;
+    this.recordExecution(jobName, CRON_JOB_STATUS.SUCCESS);
 
-    // Ghi Audit Log hành động trigger của Admin
+    // Ghi duy nhất 1 Audit Log đầy đủ actorContext cho mỗi lượt thực thi
     await this.repository.createAuditLog({
       actorId: actorContext?.actorId,
       action: AUDIT_ACTION.TRIGGER_CRON_JOB,
       targetType: AUDIT_TARGET_TYPE.CRON_JOB,
       targetId: jobName,
-      details: { params, durationMs, result: executionData },
+      details: {
+        status: CRON_JOB_STATUS.SUCCESS,
+        triggerSource,
+        params: effectiveParams,
+        durationMs,
+        result: executionData,
+      },
       ipAddress: actorContext?.ipAddress,
       userAgent: actorContext?.userAgent,
     });

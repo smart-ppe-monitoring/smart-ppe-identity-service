@@ -4,16 +4,51 @@ import {
   CRON_CONFIG_CATEGORY,
   CRON_CONFIG_KEY_PREFIX,
   CRON_JOB_NAMES,
+  CRON_JOB_STATUS,
   CronJobName,
 } from "../../common/constants/cron.constant";
 import {
+  AUDIT_ACTION,
+  AUDIT_TARGET_TYPE,
+} from "../../common/constants/audit-log.constant";
+import {
+  EVENT_NAMES,
+  OUTBOX_STATUS,
+} from "../../common/constants/event.constant";
+import {
   ActivitySummaryStatsDto,
+  CronJobLastExecutionDto,
   StoredCronJobConfig,
 } from "./cron.dto";
 import {
   userRepository,
   UserRepository,
 } from "../users/user.repository";
+
+const EMAIL_OUTBOX_EVENT_TYPES: string[] = [
+  EVENT_NAMES.AUTH_USER_REGISTERED,
+  EVENT_NAMES.AUTH_VERIFICATION_REQUESTED,
+  EVENT_NAMES.AUTH_PASSWORD_RESET_REQUESTED,
+  EVENT_NAMES.AUTH_NEW_DEVICE_DETECTED,
+  EVENT_NAMES.AUTH_DEACTIVATION_REQUESTED,
+];
+
+const NOTIFICATION_OUTBOX_EVENT_TYPES: string[] = [
+  ...EMAIL_OUTBOX_EVENT_TYPES,
+  EVENT_NAMES.PPE_VIOLATION_DETECTED,
+  EVENT_NAMES.PPE_INCIDENT_CREATED,
+  EVENT_NAMES.PPE_INCIDENT_ASSIGNED,
+  EVENT_NAMES.PPE_INCIDENT_RESOLVED,
+  EVENT_NAMES.PPE_SITE_ALERT_TRIGGERED,
+];
+
+const CRON_EXECUTION_AUDIT_ACTIONS: string[] = [
+  AUDIT_ACTION.TRIGGER_CRON_JOB,
+  AUDIT_ACTION.CLEANUP_AUDIT_LOGS,
+  AUDIT_ACTION.CLEANUP_UNCONFIRMED_UPLOADS,
+  AUDIT_ACTION.CLEANUP_EXPIRED_TOKENS,
+  AUDIT_ACTION.SEND_SUMMARY_DIGEST,
+];
 
 export class CronRepository {
   private readonly userRepo: UserRepository;
@@ -87,6 +122,8 @@ export class CronRepository {
     const [
       newUsersCount,
       activeSessionsCount,
+      notificationsSentCount,
+      emailsSentCount,
       webhookDeliveriesCount,
       auditLogsCount,
     ] = await prisma.$transaction([
@@ -97,6 +134,20 @@ export class CronRepository {
       }),
       prisma.refreshToken.count({
         where: {
+          createdAt: { gte: startDate, lte: endDate },
+        },
+      }),
+      prisma.outboxEvent.count({
+        where: {
+          status: OUTBOX_STATUS.PUBLISHED,
+          eventType: { in: NOTIFICATION_OUTBOX_EVENT_TYPES },
+          createdAt: { gte: startDate, lte: endDate },
+        },
+      }),
+      prisma.outboxEvent.count({
+        where: {
+          status: OUTBOX_STATUS.PUBLISHED,
+          eventType: { in: EMAIL_OUTBOX_EVENT_TYPES },
           createdAt: { gte: startDate, lte: endDate },
         },
       }),
@@ -115,11 +166,55 @@ export class CronRepository {
     return {
       newUsersCount,
       activeSessionsCount,
-      notificationsSentCount: 0,
-      emailsSentCount: 0,
+      notificationsSentCount,
+      emailsSentCount,
       webhookDeliveriesCount,
       auditLogsCount,
     };
+  }
+
+  /**
+   * Lấy thông tin lần thực thi gần nhất (thời điểm và trạng thái) của từng Cron Job từ audit_logs
+   */
+  async findLatestJobExecutions(): Promise<
+    Partial<Record<CronJobName, CronJobLastExecutionDto>>
+  > {
+    const validNames = Object.values(CRON_JOB_NAMES);
+    const rows = await prisma.auditLog.findMany({
+      where: {
+        targetType: AUDIT_TARGET_TYPE.CRON_JOB,
+        targetId: { in: validNames },
+        action: { in: CRON_EXECUTION_AUDIT_ACTIONS },
+      },
+      orderBy: [{ targetId: "asc" }, { createdAt: "desc" }, { id: "desc" }],
+      distinct: ["targetId"],
+      select: {
+        targetId: true,
+        details: true,
+        createdAt: true,
+      },
+    });
+
+    const result: Partial<Record<CronJobName, CronJobLastExecutionDto>> = {};
+    for (const row of rows) {
+      const details =
+        row.details &&
+        typeof row.details === "object" &&
+        !Array.isArray(row.details)
+          ? (row.details as Record<string, unknown>)
+          : {};
+      const isFailed =
+        details.status === CRON_JOB_STATUS.FAILED ||
+        details.success === false ||
+        Boolean(details.error);
+
+      result[row.targetId as CronJobName] = {
+        lastRunAt: row.createdAt.toISOString(),
+        lastStatus: isFailed ? CRON_JOB_STATUS.FAILED : CRON_JOB_STATUS.SUCCESS,
+      };
+    }
+
+    return result;
   }
 
   /**
@@ -149,35 +244,31 @@ export class CronRepository {
   }
 
   /**
-   * Đọc toàn bộ cấu hình cron jobs đã lưu trong system_configs
+   * Đọc toàn bộ cấu hình cron jobs đã lưu trong system_configs (cho phép lỗi DB lan truyền để retry)
    */
   async findAllJobConfigs(): Promise<
     Partial<Record<CronJobName, StoredCronJobConfig>>
   > {
-    try {
-      const validNames = new Set<string>(Object.values(CRON_JOB_NAMES));
-      const rows = await prisma.systemConfig.findMany({
-        where: {
-          key: { startsWith: CRON_CONFIG_KEY_PREFIX },
-        },
-      });
-      const result: Partial<Record<CronJobName, StoredCronJobConfig>> = {};
-      for (const row of rows) {
-        const jobName = row.key.slice(CRON_CONFIG_KEY_PREFIX.length);
-        if (
-          validNames.has(jobName) &&
-          row.value &&
-          typeof row.value === "object" &&
-          !Array.isArray(row.value)
-        ) {
-          result[jobName as CronJobName] =
-            row.value as unknown as StoredCronJobConfig;
-        }
+    const validNames = new Set<string>(Object.values(CRON_JOB_NAMES));
+    const rows = await prisma.systemConfig.findMany({
+      where: {
+        key: { startsWith: CRON_CONFIG_KEY_PREFIX },
+      },
+    });
+    const result: Partial<Record<CronJobName, StoredCronJobConfig>> = {};
+    for (const row of rows) {
+      const jobName = row.key.slice(CRON_CONFIG_KEY_PREFIX.length);
+      if (
+        validNames.has(jobName) &&
+        row.value &&
+        typeof row.value === "object" &&
+        !Array.isArray(row.value)
+      ) {
+        result[jobName as CronJobName] =
+          row.value as unknown as StoredCronJobConfig;
       }
-      return result;
-    } catch {
-      return {};
     }
+    return result;
   }
 
   /**

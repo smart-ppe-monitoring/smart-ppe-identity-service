@@ -49,7 +49,9 @@ const server = app.listen(PORT, async () => {
   cronWorker.start();
   eventBusWorker.start();
   outboxWorker.start();
-  await cronService.syncSchedulers();
+  await cronService.syncSchedulers().catch((err) => {
+    console.warn("[Server] Failed to register cron schedules:", err.message);
+  });
 });
 
 // Graceful Shutdown Handler

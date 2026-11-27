@@ -46,6 +46,23 @@ export const DEFAULT_UNCONFIRMED_UPLOAD_MAX_AGE_HOURS = 24;
 export const CRON_CONFIG_KEY_PREFIX = "cron.job.";
 export const CRON_CONFIG_CATEGORY = "CRON";
 
+export const CRON_JOB_STATUS = {
+  READY: "READY",
+  SUCCESS: "SUCCESS",
+  FAILED: "FAILED",
+} as const;
+
+export type CronJobStatus =
+  (typeof CRON_JOB_STATUS)[keyof typeof CRON_JOB_STATUS];
+
+export const CRON_TRIGGER_SOURCE = {
+  MANUAL: "MANUAL",
+  SCHEDULED: "SCHEDULED",
+} as const;
+
+export type CronTriggerSource =
+  (typeof CRON_TRIGGER_SOURCE)[keyof typeof CRON_TRIGGER_SOURCE];
+
 export const CRON_SCHEDULE_FREQUENCY = {
   HOURLY: "HOURLY",
   DAILY: "DAILY",

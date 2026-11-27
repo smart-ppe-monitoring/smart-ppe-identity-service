@@ -7,6 +7,10 @@ import {
 } from "./system-config.dto";
 import { SYSTEM_CONFIG_CATEGORY } from "../../common/constants/system-config.constant";
 import {
+  CRON_CONFIG_CATEGORY,
+  CRON_CONFIG_KEY_PREFIX,
+} from "../../common/constants/cron.constant";
+import {
   calculatePaginationSkip,
   formatPaginationMeta,
 } from "../../common/helpers/pagination.helper";
@@ -14,24 +18,33 @@ import {
 export class SystemConfigRepository {
   async findAll(query: SystemConfigQueryDto = {}) {
     const safeQuery = query || {};
+    const andConditions: Prisma.SystemConfigWhereInput[] = [
+      { category: { not: CRON_CONFIG_CATEGORY } },
+      { NOT: { key: { startsWith: CRON_CONFIG_KEY_PREFIX } } },
+    ];
+
+    if (safeQuery.category) {
+      andConditions.push({ category: safeQuery.category });
+    }
+    if (safeQuery.isPublic !== undefined) {
+      andConditions.push({ isPublic: safeQuery.isPublic });
+    }
+    if (safeQuery.search) {
+      andConditions.push({
+        OR: [
+          { key: { contains: safeQuery.search, mode: "insensitive" } },
+          {
+            description: {
+              contains: safeQuery.search,
+              mode: "insensitive",
+            },
+          },
+        ],
+      });
+    }
+
     const where: Prisma.SystemConfigWhereInput = {
-      ...(safeQuery.category ? { category: safeQuery.category } : {}),
-      ...(safeQuery.isPublic !== undefined
-        ? { isPublic: safeQuery.isPublic }
-        : {}),
-      ...(safeQuery.search
-        ? {
-            OR: [
-              { key: { contains: safeQuery.search, mode: "insensitive" } },
-              {
-                description: {
-                  contains: safeQuery.search,
-                  mode: "insensitive",
-                },
-              },
-            ],
-          }
-        : {}),
+      AND: andConditions,
     };
 
     if (safeQuery.page !== undefined || safeQuery.limit !== undefined) {
@@ -76,7 +89,11 @@ export class SystemConfigRepository {
 
   async findPublicConfigs() {
     return prisma.systemConfig.findMany({
-      where: { isPublic: true },
+      where: {
+        isPublic: true,
+        category: { not: CRON_CONFIG_CATEGORY },
+        NOT: { key: { startsWith: CRON_CONFIG_KEY_PREFIX } },
+      },
       select: {
         key: true,
         value: true,

@@ -36,7 +36,14 @@ export function registerCronOpenApi(): void {
       retentionDays: z.number().optional(),
       maxAgeHours: z.number().optional(),
     }),
-    lastStatus: z.string().openapi({ example: "READY" }),
+    lastRunAt: z.string().datetime().nullable().openapi({
+      example: "2026-11-27T02:00:00.000Z",
+      description: "Thời điểm thực thi gần nhất (null nếu chưa từng chạy)",
+    }),
+    lastStatus: z.enum(["READY", "SUCCESS", "FAILED"]).openapi({
+      example: "SUCCESS",
+      description: "Trạng thái lần chạy gần nhất (READY nếu chưa từng chạy)",
+    }),
   });
 
   // GET /cron/jobs
@@ -113,7 +120,7 @@ export function registerCronOpenApi(): void {
     tags: ["Scheduled Tasks & Cron Jobs"],
     summary: "Bật / Tắt lịch trình tự động của một Cron Job",
     description:
-      "Toggle trạng thái `isEnabled` của job. Khi tắt, lịch trình BullMQ bị xóa; khi bật lại, lịch trình được đăng ký lại. Trạng thái lưu in-memory và reset về `enabled` khi server khởi động lại.",
+      "Toggle trạng thái `isEnabled` của job. Khi tắt, lịch trình BullMQ bị xóa; khi bật lại, lịch trình được đăng ký lại. Trạng thái được lưu bền vững vào cơ sở dữ liệu.",
     security: [{ BearerAuth: [] }],
     request: { params: cronJobNameParamSchema },
     responses: {

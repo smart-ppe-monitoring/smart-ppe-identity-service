@@ -1,5 +1,6 @@
 import {
   CronJobName,
+  CronJobStatus,
   CronScheduleConfig,
 } from "../../common/constants/cron.constant";
 
@@ -15,6 +16,11 @@ export interface StoredCronJobConfig {
   defaultParams: CronJobDefaultParamsDto;
 }
 
+export interface CronJobLastExecutionDto {
+  lastRunAt: string;
+  lastStatus: CronJobStatus;
+}
+
 export interface CronJobItemDto {
   name: CronJobName;
   cron: string;
@@ -25,7 +31,8 @@ export interface CronJobItemDto {
   defaultParams: CronJobDefaultParamsDto;
   nextRun?: string;
   lastRun?: string;
-  lastStatus?: string;
+  lastRunAt: string | null;
+  lastStatus: CronJobStatus;
 }
 
 export interface UpdateCronJobDto {

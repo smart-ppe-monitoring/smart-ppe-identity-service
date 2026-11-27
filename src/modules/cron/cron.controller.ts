@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from "express";
 import { cronService, CronService } from "./cron.service";
 import { CronJobName } from "../../common/constants/cron.constant";
+import { getClientIp } from "../../common/helpers/ip.helper";
 
 export class CronController {
   constructor(private readonly service: CronService = cronService) {}
@@ -33,10 +34,7 @@ export class CronController {
 
       const result = await this.service.triggerJob(jobName, params, {
         actorId: req.user?.id,
-        ipAddress:
-          req.ip ||
-          (req.headers["x-forwarded-for"] as string) ||
-          req.socket.remoteAddress,
+        ipAddress: getClientIp(req) || undefined,
         userAgent: req.headers["user-agent"],
       });
 
@@ -60,10 +58,7 @@ export class CronController {
 
       const result = await this.service.toggleJob(jobName, {
         actorId: req.user?.id,
-        ipAddress:
-          req.ip ||
-          (req.headers["x-forwarded-for"] as string) ||
-          req.socket.remoteAddress,
+        ipAddress: getClientIp(req) || undefined,
         userAgent: req.headers["user-agent"],
       });
 
@@ -87,10 +82,7 @@ export class CronController {
       const jobName = req.params.jobName as CronJobName;
       const result = await this.service.updateJob(jobName, req.body, {
         actorId: req.user?.id,
-        ipAddress:
-          req.ip ||
-          (req.headers["x-forwarded-for"] as string) ||
-          req.socket.remoteAddress,
+        ipAddress: getClientIp(req) || undefined,
         userAgent: req.headers["user-agent"],
       });
 

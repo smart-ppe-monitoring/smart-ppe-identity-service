@@ -18,6 +18,10 @@ import {
   SYSTEM_CONFIG_REDACTED_VALUE,
 } from "../../common/constants/system-config.constant";
 import {
+  CRON_CONFIG_CATEGORY,
+  CRON_CONFIG_KEY_PREFIX,
+} from "../../common/constants/cron.constant";
+import {
   AUDIT_ACTION,
   AUDIT_TARGET_TYPE,
 } from "../../common/constants/audit-log.constant";
@@ -36,6 +40,16 @@ const isTestEnv =
   process.env.NODE_ENV === "test" ||
   process.argv.some((arg) => arg.includes("test")) ||
   process.env.npm_lifecycle_event === "test";
+
+export function isReservedCronConfig(config: {
+  key?: string | null;
+  category?: string | null;
+}): boolean {
+  const keyStartsWithCron =
+    typeof config.key === "string" &&
+    config.key.startsWith(CRON_CONFIG_KEY_PREFIX);
+  return keyStartsWithCron || config.category === CRON_CONFIG_CATEGORY;
+}
 
 export function isSensitiveSystemConfig(config: {
   isPublic?: boolean | null;
@@ -172,8 +186,15 @@ export class SystemConfigService {
    * Lấy bản ghi cấu hình đầy đủ theo key.
    */
   async findByKey(key: string): Promise<SystemConfigItemDto> {
+    if (isReservedCronConfig({ key })) {
+      throw new AppError(
+        `System configuration '${key}' not found`,
+        404,
+        ERROR_CODE.NOT_FOUND,
+      );
+    }
     const config = await this.repository.findByKey(key);
-    if (!config) {
+    if (!config || isReservedCronConfig(config)) {
       throw new AppError(
         `System configuration '${key}' not found`,
         404,
@@ -253,6 +274,14 @@ export class SystemConfigService {
     data: CreateSystemConfigDto,
     context?: { actorId?: string; ipAddress?: string; userAgent?: string },
   ) {
+    if (isReservedCronConfig({ key: data.key, category: data.category })) {
+      throw new AppError(
+        `Configuration key '${data.key}' is reserved for scheduled cron jobs and must be managed via /cron/jobs`,
+        400,
+        ERROR_CODE.VALIDATION_ERROR,
+      );
+    }
+
     const existing = await this.repository.findByKey(data.key);
     if (existing) {
       throw new AppError(
@@ -293,12 +322,26 @@ export class SystemConfigService {
     data: UpdateSystemConfigDto,
     context?: { actorId?: string; ipAddress?: string; userAgent?: string },
   ) {
-    const existing = await this.repository.findByKey(key);
-    if (!existing) {
+    if (isReservedCronConfig({ key })) {
       throw new AppError(
         `Configuration key '${key}' not found`,
         404,
         ERROR_CODE.NOT_FOUND,
+      );
+    }
+    const existing = await this.repository.findByKey(key);
+    if (!existing || isReservedCronConfig(existing)) {
+      throw new AppError(
+        `Configuration key '${key}' not found`,
+        404,
+        ERROR_CODE.NOT_FOUND,
+      );
+    }
+    if (isReservedCronConfig({ category: data.category })) {
+      throw new AppError(
+        `Category '${CRON_CONFIG_CATEGORY}' is reserved for scheduled cron jobs`,
+        400,
+        ERROR_CODE.VALIDATION_ERROR,
       );
     }
 
@@ -395,8 +438,15 @@ export class SystemConfigService {
     key: string,
     context?: { actorId?: string; ipAddress?: string; userAgent?: string },
   ) {
+    if (isReservedCronConfig({ key })) {
+      throw new AppError(
+        `Configuration key '${key}' not found`,
+        404,
+        ERROR_CODE.NOT_FOUND,
+      );
+    }
     const existing = await this.repository.findByKey(key);
-    if (!existing) {
+    if (!existing || isReservedCronConfig(existing)) {
       throw new AppError(
         `Configuration key '${key}' not found`,
         404,

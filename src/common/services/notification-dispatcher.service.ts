@@ -60,8 +60,8 @@ class NotificationDispatcher {
     );
   }
 
-  async send(event: NotificationEvent): Promise<void> {
-    if (!(await this.isNotificationsEnabled())) return;
+  async send(event: NotificationEvent): Promise<boolean> {
+    if (!(await this.isNotificationsEnabled())) return false;
 
     const tasks: Promise<unknown>[] = [];
 
@@ -86,6 +86,7 @@ class NotificationDispatcher {
     }
 
     await Promise.all(tasks);
+    return true;
   }
 
   /**

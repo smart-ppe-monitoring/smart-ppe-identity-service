@@ -153,11 +153,20 @@ export class R2Service {
 
   /**
    * Xóa hàng loạt file khỏi R2 theo batch (tối đa 1000 files/lần gọi theo chuẩn S3).
+   * Trả về danh sách key đã xóa thành công và key thất bại để tránh báo cáo sai kết quả.
    * @param keys Danh sách đường dẫn file trong bucket
    */
-  async deleteFiles(keys: string[]): Promise<void> {
-    if (!keys || keys.length === 0) return;
+  async deleteFiles(
+    keys: string[],
+  ): Promise<{ deletedKeys: string[]; failedKeys: string[] }> {
+    if (!keys || keys.length === 0) {
+      return { deletedKeys: [], failedKeys: [] };
+    }
+
+    const deletedKeys: string[] = [];
+    const failedKeys: string[] = [];
     const CHUNK_SIZE = 1000;
+
     for (let i = 0; i < keys.length; i += CHUNK_SIZE) {
       const chunk = keys.slice(i, i + CHUNK_SIZE);
       const command = new DeleteObjectsCommand({
@@ -167,8 +176,30 @@ export class R2Service {
           Quiet: true,
         },
       });
-      await this.client.send(command);
+      try {
+        const response = await this.client.send(command);
+        const chunkErrorKeys = new Set(
+          (response?.Errors || [])
+            .map((err) => err.Key)
+            .filter((k): k is string => typeof k === "string" && k.length > 0),
+        );
+        for (const key of chunk) {
+          if (chunkErrorKeys.has(key)) {
+            failedKeys.push(key);
+          } else {
+            deletedKeys.push(key);
+          }
+        }
+      } catch (err: any) {
+        console.warn(
+          "[R2Service] deleteFiles chunk failed:",
+          err?.message || err,
+        );
+        failedKeys.push(...chunk);
+      }
     }
+
+    return { deletedKeys, failedKeys };
   }
 
   /**
