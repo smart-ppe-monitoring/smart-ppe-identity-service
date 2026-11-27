@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import { AuthService } from "../src/modules/auth/auth.service";
+import { clearConsumedTempTokens } from "../src/modules/auth/services/auth-2fa.service";
 import { AuthRepository } from "../src/modules/auth/auth.repository";
 import { permissionCacheService } from "../src/common/services/permission-cache.service";
 import { ROLES } from "../src/common/constants/role.constant";
@@ -47,6 +48,7 @@ describe("Two-Factor Authentication (2FA / TOTP) Test Suite", () => {
     auditLogs = [];
     revokedSessionsHistory = [];
     permissionCacheService.clear();
+    clearConsumedTempTokens();
 
     const roleId = "a0000000-0000-0000-0000-000000000001";
     (permissionCacheService as any).cache.set(roleId, {
@@ -442,7 +444,11 @@ describe("Two-Factor Authentication (2FA / TOTP) Test Suite", () => {
 
       // Attempt to reuse the same backup code must fail!
       const secondTempToken = jwt.sign(
-        { id: mockUser.id, purpose: "2FA_VERIFICATION" },
+        {
+          id: mockUser.id,
+          purpose: "2FA_VERIFICATION",
+          jti: "second-temp-token-backup-reuse",
+        },
         jwtConfig.tempSecret,
         { expiresIn: "5m" },
       );

@@ -152,6 +152,12 @@ export class AuthRepository {
           providerUserId,
         },
       });
+      await tx.verificationToken.deleteMany({
+        where: {
+          userId,
+          type: VERIFICATION_TOKEN_TYPE.EMAIL_VERIFICATION,
+        },
+      });
       return tx.user.update({
         where: { id: userId },
         data: {

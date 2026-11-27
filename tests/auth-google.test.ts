@@ -483,6 +483,13 @@ describe("Google OAuth2 Login & Account Linking Test Suite", () => {
           if (email === "localuser@gmail.com") return existingLocalUser as any;
           return null;
         },
+        findActiveVerificationTokenByUserId: async () =>
+          ({
+            id: "verif-token-1",
+            userId: existingLocalUser.id,
+            type: "EMAIL_VERIFICATION",
+            expiresAt: new Date(Date.now() + 3600_000),
+          }) as any,
         linkSocialAccount: async (
           userId: string,
           provider: string,

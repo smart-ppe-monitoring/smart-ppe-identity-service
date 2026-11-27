@@ -130,11 +130,14 @@ export interface GoogleLoginDto {
   idToken?: string;
   code?: string;
   redirectUri?: string;
+  codeVerifier?: string;
 }
 
 export interface GoogleAuthUrlQueryDto {
   redirectUri?: string;
   state?: string;
+  codeChallenge?: string;
+  codeChallengeMethod?: "S256";
 }
 
 export interface GoogleAuthUrlResponseDto {
@@ -146,6 +149,7 @@ export interface LinkSocialAccountDto {
   idToken?: string;
   code?: string;
   redirectUri?: string;
+  codeVerifier?: string;
 }
 
 export interface SocialAccountDto {

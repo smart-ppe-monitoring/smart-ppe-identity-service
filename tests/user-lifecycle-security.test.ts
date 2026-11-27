@@ -333,7 +333,7 @@ describe("User Lifecycle & Security Hardening Test Suite", () => {
   // 2. Account Lockout Tests
   // ──────────────────────────────────────────────────────────────────────────
   describe("2. Account Lockout (Khóa tạm do nhập sai mật khẩu)", () => {
-    it("should increment failedLoginAttempts and show remaining attempts on invalid password", async () => {
+    it("should increment failedLoginAttempts and return generic error without leaking remaining attempts on invalid password", async () => {
       await assert.rejects(
         async () => {
           await authService.login({
@@ -345,7 +345,8 @@ describe("User Lifecycle & Security Hardening Test Suite", () => {
           assert.strictEqual(err instanceof AppError, true);
           assert.strictEqual(err.statusCode, 401);
           assert.strictEqual(err.code, ERROR_CODE.INVALID_CREDENTIALS);
-          assert.match(err.message, /Bạn còn 4 lần thử/);
+          assert.strictEqual(err.message, "Email hoặc mật khẩu không chính xác");
+          assert.strictEqual(err.message.includes("Bạn còn"), false);
           return true;
         },
       );
@@ -439,7 +440,8 @@ describe("User Lifecycle & Security Hardening Test Suite", () => {
           assert.strictEqual(err instanceof AppError, true);
           assert.strictEqual(err.statusCode, 401);
           assert.strictEqual(err.code, ERROR_CODE.INVALID_CREDENTIALS);
-          assert.match(err.message, /Bạn còn 4 lần thử/);
+          assert.strictEqual(err.message, "Email hoặc mật khẩu không chính xác");
+          assert.strictEqual(err.message.includes("Bạn còn"), false);
           return true;
         },
       );

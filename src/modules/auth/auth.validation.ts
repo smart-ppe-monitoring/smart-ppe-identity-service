@@ -181,6 +181,19 @@ export const regenerateBackupCodesSchema = z.object({
     .regex(/^\d{6}$/, "Mã TOTP phải là 6 chữ số"),
 });
 
+const PKCE_PARAM_REGEX = /^[A-Za-z0-9\-._~]+$/;
+
+const optionalPkceParamSchema = (label: string) =>
+  z
+    .string()
+    .min(43, `${label} phải có ít nhất 43 ký tự theo chuẩn PKCE RFC 7636`)
+    .max(128, `${label} không được vượt quá 128 ký tự theo chuẩn PKCE RFC 7636`)
+    .regex(
+      PKCE_PARAM_REGEX,
+      `${label} chỉ được chứa các ký tự hợp lệ [A-Za-z0-9-._~]`,
+    )
+    .optional();
+
 export const googleLoginSchema = z
   .object({
     idToken: z
@@ -195,6 +208,7 @@ export const googleLoginSchema = z
       .string()
       .url("Redirect URI không đúng định dạng URL")
       .optional(),
+    codeVerifier: optionalPkceParamSchema("codeVerifier"),
   })
   .refine(
     (data) =>
@@ -219,13 +233,23 @@ export const googleLoginSchema = z
     },
   );
 
-export const googleAuthUrlQuerySchema = z.object({
-  redirectUri: z
-    .string()
-    .url("redirectUri không đúng định dạng URL")
-    .optional(),
-  state: z.string().max(255, "state tối đa 255 ký tự").optional(),
-});
+export const googleAuthUrlQuerySchema = z
+  .object({
+    redirectUri: z
+      .string()
+      .url("redirectUri không đúng định dạng URL")
+      .optional(),
+    state: z.string().max(255, "state tối đa 255 ký tự").optional(),
+    codeChallenge: optionalPkceParamSchema("codeChallenge"),
+    codeChallengeMethod: z.enum(["S256"]).optional(),
+  })
+  .refine(
+    (data) => !data.codeChallengeMethod || Boolean(data.codeChallenge),
+    {
+      message: "codeChallenge là bắt buộc khi truyền codeChallengeMethod",
+      path: ["codeChallenge"],
+    },
+  );
 
 export const linkSocialAccountSchema = z
   .object({
@@ -239,6 +263,7 @@ export const linkSocialAccountSchema = z
       .string()
       .url("Redirect URI không đúng định dạng URL")
       .optional(),
+    codeVerifier: optionalPkceParamSchema("codeVerifier"),
   })
   .refine(
     (data) =>

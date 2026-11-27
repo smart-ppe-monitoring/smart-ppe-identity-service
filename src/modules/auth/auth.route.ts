@@ -50,7 +50,14 @@ router.post(
 );
 router.get(
   "/verify-email",
+  authRateLimitMiddleware,
   validate(verifyEmailSchema, "query"),
+  controller.verifyEmail,
+);
+router.post(
+  "/verify-email",
+  authRateLimitMiddleware,
+  validate(verifyEmailSchema),
   controller.verifyEmail,
 );
 router.post(

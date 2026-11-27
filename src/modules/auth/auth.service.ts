@@ -77,6 +77,12 @@ import {
 import { WEBHOOK_EVENTS } from "../../common/constants/integration.constant";
 import { integrationService } from "../integration/integration.service";
 import { EVENT_NAMES } from "../../common/constants/event.constant";
+import { systemConfigService } from "../system-config/system-config.service";
+import { FEATURE_FLAGS } from "../../common/constants/system-config.constant";
+import { VERIFICATION_TOKEN_TYPE } from "../../common/constants/verification-token.constant";
+
+const GENERIC_INVALID_CREDENTIALS_MESSAGE =
+  "Email hoặc mật khẩu không chính xác";
 
 export interface RefreshTokenPayload extends jwt.JwtPayload {
   id: string;
@@ -118,7 +124,11 @@ export class AuthService {
     this.mailService = mailService || new MailService();
     this.r2Service = r2Service || new R2Service();
     this.twoFactorService =
-      twoFactorService || new Auth2FAService(() => this.repository);
+      twoFactorService ||
+      new Auth2FAService(
+        () => this.repository,
+        (user, metadata) => this.issueAuthTokens(user, metadata),
+      );
     this.dispatcher = dispatcher || notificationDispatcher;
     this.eventBus = eventBusService || eventBus;
   }
@@ -180,9 +190,8 @@ export class AuthService {
         failedLoginAttempts: nextAttempts,
         lockedUntil: null,
       });
-      const remaining = MAX_FAILED_ATTEMPTS - nextAttempts;
       throw new AppError(
-        `Email hoặc mật khẩu không chính xác. Bạn còn ${remaining} lần thử trước khi tài khoản bị khóa.`,
+        GENERIC_INVALID_CREDENTIALS_MESSAGE,
         401,
         ERROR_CODE.INVALID_CREDENTIALS,
       );
@@ -208,7 +217,7 @@ export class AuthService {
 
     if (!user) {
       throw new AppError(
-        "Invalid credentials",
+        GENERIC_INVALID_CREDENTIALS_MESSAGE,
         401,
         ERROR_CODE.INVALID_CREDENTIALS,
       );
@@ -219,7 +228,7 @@ export class AuthService {
 
     if (!user.password) {
       throw new AppError(
-        "Invalid credentials",
+        GENERIC_INVALID_CREDENTIALS_MESSAGE,
         401,
         ERROR_CODE.INVALID_CREDENTIALS,
       );
@@ -253,7 +262,7 @@ export class AuthService {
       // SEC: Dùng jwtConfig.tempSecret (riêng biệt) thay vì accessSecret
       // Để ngăn token confusion attack — temp token không thể bị dùng như access token
       const tempToken = jwt.sign(
-        { id: user.id, purpose: "2FA_VERIFICATION" },
+        { id: user.id, purpose: "2FA_VERIFICATION", jti: crypto.randomUUID() },
         jwtConfig.tempSecret,
         { expiresIn: "5m" },
       );
@@ -427,6 +436,7 @@ export class AuthService {
         data.redirectUri!,
         envConfig.google.clientId,
         envConfig.google.clientSecret,
+        data.codeVerifier,
       );
       idToken = tokenRes.idToken;
     }
@@ -478,6 +488,25 @@ export class AuthService {
 
         // Liên kết tài khoản Google với User hiện tại
         if (!existingUser.isActive) {
+          // Chỉ tự động kích hoạt nếu tài khoản đang chờ xác thực email (có verification token hiệu lực).
+          // Tuyệt đối không tự bật lại tài khoản đã bị Admin vô hiệu hóa (isActive = false, không có token chờ xác thực).
+          const pendingVerificationToken =
+            typeof this.repository.findActiveVerificationTokenByUserId ===
+            "function"
+              ? await this.repository.findActiveVerificationTokenByUserId(
+                  existingUser.id,
+                  VERIFICATION_TOKEN_TYPE.EMAIL_VERIFICATION,
+                )
+              : null;
+
+          if (!pendingVerificationToken) {
+            throw new AppError(
+              "Tài khoản đã bị vô hiệu hóa hoặc xóa.",
+              403,
+              ERROR_CODE.USER_INACTIVE,
+            );
+          }
+
           // SEC-03: Chống tấn công Pre-Account Takeover:
           // Nếu tài khoản trước đó được đăng ký cục bộ nhưng CHƯA xác thực email,
           // kẻ tấn công có thể đã đăng ký trước bằng email này với mật khẩu do kẻ tấn công chọn.
@@ -525,7 +554,20 @@ export class AuthService {
           userAgent: metadata?.userAgent,
         });
       } else {
-        // 3. User mới hoàn toàn -> Tạo user mới với vai trò mặc định USER
+        // 3. User mới hoàn toàn -> Kiểm tra Feature Flag cho phép đăng ký trước khi tạo user mới
+        const isRegistrationEnabled =
+          await systemConfigService.isFeatureEnabled(
+            FEATURE_FLAGS.REGISTRATION_ENABLED,
+            true,
+          );
+        if (!isRegistrationEnabled) {
+          throw new AppError(
+            "Tính năng đăng ký tài khoản hiện đang tạm khóa bởi quản trị viên",
+            403,
+            ERROR_CODE.FEATURE_DISABLED,
+          );
+        }
+
         const defaultRole = await this.repository.findRoleByName(ROLES.USER);
         if (!defaultRole) {
           throw new AppError(
@@ -550,7 +592,7 @@ export class AuthService {
     if (user.twoFactorEnabled) {
       // SEC: Dùng jwtConfig.tempSecret (riêng biệt) thay vì accessSecret
       const tempToken = jwt.sign(
-        { id: user.id, purpose: "2FA_VERIFICATION" },
+        { id: user.id, purpose: "2FA_VERIFICATION", jti: crypto.randomUUID() },
         jwtConfig.tempSecret,
         { expiresIn: "5m" },
       );
@@ -604,6 +646,12 @@ export class AuthService {
       envConfig.google.clientId,
       redirectUri,
       query.state,
+      query.codeChallenge
+        ? {
+            codeChallenge: query.codeChallenge,
+            codeChallengeMethod: query.codeChallengeMethod,
+          }
+        : undefined,
     );
     return { url };
   }
@@ -669,6 +717,7 @@ export class AuthService {
         data.redirectUri!,
         envConfig.google.clientId,
         envConfig.google.clientSecret,
+        data.codeVerifier,
       );
       idToken = tokenRes.idToken;
     }
@@ -1161,6 +1210,13 @@ export class AuthService {
           ERROR_CODE.INVALID_CREDENTIALS,
         );
       }
+      if (data.newPassword === data.oldPassword) {
+        throw new AppError(
+          "Mật khẩu mới không được trùng với mật khẩu hiện tại",
+          400,
+          ERROR_CODE.PASSWORD_UNCHANGED,
+        );
+      }
     } else {
       // HIGH-04 Fix: Tài khoản social không được tự ý gán mật khẩu khi chưa xác thực email qua luồng forgotPassword
       throw new AppError(
@@ -1254,6 +1310,15 @@ export class AuthService {
       );
     }
 
+    if (!resetToken.user || resetToken.user.deletedAt) {
+      await this.repository.deletePasswordResetToken(resetToken.id);
+      throw new AppError(
+        "Tài khoản không khả dụng hoặc đã bị xóa",
+        403,
+        ERROR_CODE.USER_INACTIVE,
+      );
+    }
+
     if (resetToken.expiresAt < new Date()) {
       await this.repository.deletePasswordResetToken(resetToken.id);
       throw new AppError(
@@ -1269,6 +1334,7 @@ export class AuthService {
       passwordHash,
       resetToken.id,
     );
+    permissionCacheService.invalidateUser(resetToken.userId);
 
     notificationDispatcher
       .notify(

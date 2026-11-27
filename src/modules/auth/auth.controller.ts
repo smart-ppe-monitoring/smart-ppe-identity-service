@@ -189,7 +189,9 @@ export class AuthController {
 
   verifyEmail = async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const { token } = req.query as { token: string };
+      const token =
+        (typeof req.body?.token === "string" && req.body.token) ||
+        (req.query?.token as string);
       await this.service.verifyEmail(token);
 
       res.json({
@@ -252,6 +254,8 @@ export class AuthController {
     try {
       const body = req.body as ResetPasswordDto;
       await this.service.resetPassword(body);
+
+      this.clearAuthCookies(res);
 
       res.json({
         success: true,

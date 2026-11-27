@@ -159,6 +159,7 @@ export async function exchangeGoogleCode(
   redirectUri: string,
   clientId: string,
   clientSecret: string,
+  codeVerifier?: string,
 ): Promise<GoogleTokenResponse> {
   if (!code || !code.trim()) {
     throw new AppError(
@@ -190,6 +191,10 @@ export async function exchangeGoogleCode(
     redirect_uri: redirectUri.trim(),
     grant_type: "authorization_code",
   });
+
+  if (codeVerifier && codeVerifier.trim()) {
+    body.set("code_verifier", codeVerifier.trim());
+  }
 
   let response: Response;
   try {
@@ -292,6 +297,11 @@ export function validateGoogleRedirectUri(redirectUri: string): void {
   }
 }
 
+export interface GoogleAuthUrlPkceOptions {
+  codeChallenge?: string;
+  codeChallengeMethod?: "S256";
+}
+
 /**
  * Tạo URL ủy quyền Google OAuth2 để chuyển hướng người dùng đăng nhập.
  */
@@ -299,6 +309,7 @@ export function generateGoogleAuthUrl(
   clientId: string,
   redirectUri: string,
   state?: string,
+  pkce?: GoogleAuthUrlPkceOptions,
 ): string {
   if (!clientId || !clientId.trim()) {
     throw new AppError(
@@ -313,12 +324,15 @@ export function generateGoogleAuthUrl(
     redirect_uri: redirectUri.trim(),
     response_type: "code",
     scope: "openid email profile",
-    access_type: "offline",
-    prompt: "consent",
   });
 
   if (state && state.trim()) {
     params.set("state", state.trim());
+  }
+
+  if (pkce?.codeChallenge && pkce.codeChallenge.trim()) {
+    params.set("code_challenge", pkce.codeChallenge.trim());
+    params.set("code_challenge_method", pkce.codeChallengeMethod || "S256");
   }
 
   return `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`;

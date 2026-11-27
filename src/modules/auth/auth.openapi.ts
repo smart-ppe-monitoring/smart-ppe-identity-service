@@ -31,6 +31,7 @@ export function registerAuthOpenApi(): void {
   // ── Schemas ──────────────────────────────────────────────────────────────────
   openapiRegistry.register("LoginRequest", loginSchema);
   openapiRegistry.register("RegisterRequest", registerSchema);
+  openapiRegistry.register("VerifyEmailRequest", verifyEmailSchema);
   openapiRegistry.register("UpdateProfileRequest", updateProfileSchema);
   openapiRegistry.register("UpdatePasswordRequest", updatePasswordSchema);
   openapiRegistry.register("ForgotPasswordRequest", forgotPasswordSchema);
@@ -104,7 +105,7 @@ export function registerAuthOpenApi(): void {
     method: "get",
     path: "/auth/verify-email",
     tags: ["Auth"],
-    summary: "Xác thực email qua token",
+    summary: "Xác thực email qua token (query)",
     request: {
       query: verifyEmailSchema,
     },
@@ -123,6 +124,39 @@ export function registerAuthOpenApi(): void {
         },
       },
       400: { description: "Token không hợp lệ hoặc đã hết hạn" },
+      429: { description: "Quá nhiều yêu cầu xác thực, vui lòng thử lại sau" },
+    },
+  });
+
+  // POST /auth/verify-email
+  openapiRegistry.registerPath({
+    method: "post",
+    path: "/auth/verify-email",
+    tags: ["Auth"],
+    summary: "Xác thực email qua token (body)",
+    request: {
+      body: {
+        content: {
+          "application/json": { schema: verifyEmailSchema },
+        },
+      },
+    },
+    responses: {
+      200: {
+        description: "Xác thực email thành công",
+        content: {
+          "application/json": {
+            schema: z.object({
+              success: z.boolean().openapi({ example: true }),
+              message: z
+                .string()
+                .openapi({ example: "Email đã được xác thực thành công." }),
+            }),
+          },
+        },
+      },
+      400: { description: "Token không hợp lệ hoặc đã hết hạn" },
+      429: { description: "Quá nhiều yêu cầu xác thực, vui lòng thử lại sau" },
     },
   });
 
@@ -775,7 +809,10 @@ export function registerAuthOpenApi(): void {
                   fullName: z.string().nullable(),
                   role: z.string(),
                   roleId: z.string().uuid(),
+                  siteId: z.string().uuid().nullable().optional(),
+                  siteIds: z.array(z.string().uuid()).optional(),
                   permissions: z.array(z.string()),
+                  mustChangePassword: z.boolean(),
                 }),
               }),
             }),
@@ -879,7 +916,7 @@ export function registerAuthOpenApi(): void {
               data: z.object({
                 url: z.string().openapi({
                   example:
-                    "https://accounts.google.com/o/oauth2/v2/auth?client_id=...&redirect_uri=...&response_type=code&scope=openid+email+profile&access_type=offline&prompt=consent",
+                    "https://accounts.google.com/o/oauth2/v2/auth?client_id=...&redirect_uri=...&response_type=code&scope=openid+email+profile",
                 }),
               }),
             }),

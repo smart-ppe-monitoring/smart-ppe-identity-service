@@ -32,12 +32,70 @@ import {
   verifyTotpCode,
   generateBackupCodes,
 } from "../../../common/helpers/totp.helper";
-import { generateDeviceHash } from "../../../common/helpers/user-agent.helper";
+import {
+  generateDeviceHash,
+  parseUserAgent,
+} from "../../../common/helpers/user-agent.helper";
 import { permissionCacheService } from "../../../common/services/permission-cache.service";
 import { PERMISSIONS } from "../../../common/constants/permission.constant";
 
+export type IssueAuthTokensFn = (
+  user: {
+    id: string;
+    email: string | null;
+    fullName: string | null;
+    role: { name: string };
+    roleId: string;
+    siteIds?: string[];
+    mustChangePassword?: boolean;
+  },
+  metadata?: { userAgent?: string; ipAddress?: string },
+) => Promise<LoginResponseDto>;
+
+const consumedTempTokens = new Map<string, number>();
+
+function pruneExpiredTempTokens(now: number = Date.now()): void {
+  for (const [key, expiresAt] of consumedTempTokens.entries()) {
+    if (expiresAt <= now) {
+      consumedTempTokens.delete(key);
+    }
+  }
+}
+
+function buildTempTokenKey(payload: { jti?: unknown }, rawToken: string): string {
+  if (typeof payload.jti === "string" && payload.jti.trim()) {
+    return `jti:${payload.jti.trim()}`;
+  }
+  return `tok:${hashToken(rawToken)}`;
+}
+
+function isTempTokenConsumed(key: string): boolean {
+  const now = Date.now();
+  pruneExpiredTempTokens(now);
+  const expiresAt = consumedTempTokens.get(key);
+  return expiresAt !== undefined && expiresAt > now;
+}
+
+function tryConsumeTempToken(key: string, expiresAtMs: number): boolean {
+  const now = Date.now();
+  pruneExpiredTempTokens(now);
+  const existing = consumedTempTokens.get(key);
+  if (existing !== undefined && existing > now) {
+    return false;
+  }
+  consumedTempTokens.set(key, Math.max(expiresAtMs, now + 1000));
+  return true;
+}
+
+export function clearConsumedTempTokens(): void {
+  consumedTempTokens.clear();
+}
+
 export class Auth2FAService {
-  constructor(private readonly getRepo: () => AuthRepository) {}
+  constructor(
+    private readonly getRepo: () => AuthRepository,
+    private readonly issueTokens?: IssueAuthTokensFn,
+  ) {}
 
   private get repository(): AuthRepository {
     return this.getRepo();
@@ -220,6 +278,15 @@ export class Auth2FAService {
       );
     }
 
+    const tokenKey = buildTempTokenKey(payload, data.tempToken);
+    if (isTempTokenConsumed(tokenKey)) {
+      throw new AppError(
+        "Mã phiên xác thực 2FA đã được sử dụng hoặc không còn hiệu lực",
+        401,
+        ERROR_CODE.TOKEN_INVALID,
+      );
+    }
+
     const user = await this.repository.findById(payload.id);
     if (
       !user ||
@@ -336,6 +403,19 @@ export class Auth2FAService {
       }
     }
 
+    // Đánh dấu tempToken đã được tiêu thụ (single-use, chống replay attack trong TTL 5 phút)
+    const tempTokenExpiresAtMs =
+      typeof payload.exp === "number"
+        ? payload.exp * 1000
+        : Date.now() + 5 * 60 * 1000;
+    if (!tryConsumeTempToken(tokenKey, tempTokenExpiresAtMs)) {
+      throw new AppError(
+        "Mã phiên xác thực 2FA đã được sử dụng hoặc không còn hiệu lực",
+        401,
+        ERROR_CODE.TOKEN_INVALID,
+      );
+    }
+
     // SEC-08 Fix: Reset số lần thử sai và xóa cờ tạm khóa khi xác thực 2FA thành công
     if (
       (user.failedLoginAttempts > 0 || user.lockedUntil) &&
@@ -347,61 +427,97 @@ export class Auth2FAService {
       });
     }
 
-    let userPermissions: string[] = [];
-    try {
-      if (user.role.name === "ADMIN") {
-        userPermissions = Object.values(PERMISSIONS);
-      } else if (user.roleId) {
-        const permsSet = await permissionCacheService.getRolePermissions(user.roleId);
-        userPermissions = Array.from(permsSet);
+    let authResult: LoginResponseDto;
+    if (this.issueTokens) {
+      authResult = await this.issueTokens(user, metadata);
+    } else {
+      let userPermissions: string[] = [];
+      try {
+        if (user.role.name === "ADMIN") {
+          userPermissions = Object.values(PERMISSIONS);
+        } else if (user.roleId) {
+          const permsSet = await permissionCacheService.getRolePermissions(
+            user.roleId,
+          );
+          userPermissions = Array.from(permsSet);
+        }
+      } catch {
+        if (user.role.name === "ADMIN") {
+          userPermissions = Object.values(PERMISSIONS);
+        }
       }
-    } catch {
-      if (user.role.name === "ADMIN") {
-        userPermissions = Object.values(PERMISSIONS);
-      }
-    }
 
-    const userSiteIds = Array.isArray(user.siteIds) ? user.siteIds : [];
-    const userSiteId = userSiteIds.length > 0 ? userSiteIds[0] : null;
+      const userSiteIds = Array.isArray(user.siteIds) ? user.siteIds : [];
+      const userSiteId = userSiteIds.length > 0 ? userSiteIds[0] : null;
 
-    // Cấp Access Token + Refresh Token chính thức (SEC-16: Đưa cờ mustChangePassword vào payload)
-    const tokenPayload = {
-      id: user.id,
-      email: user.email,
-      role: user.role.name,
-      roleId: user.roleId,
-      siteId: userSiteId,
-      siteIds: userSiteIds,
-      permissions: userPermissions,
-      mustChangePassword: user.mustChangePassword ?? false,
-      purpose: JWT_PURPOSE.ACCESS,
-    };
+      const tokenPayload = {
+        id: user.id,
+        email: user.email,
+        role: user.role.name,
+        roleId: user.roleId,
+        siteId: userSiteId,
+        siteIds: userSiteIds,
+        permissions: userPermissions,
+        mustChangePassword: user.mustChangePassword ?? false,
+        purpose: JWT_PURPOSE.ACCESS,
+      };
 
-    const accessToken = jwtKeyService.signAccessToken(tokenPayload);
+      const accessToken = jwtKeyService.signAccessToken(tokenPayload);
 
-    const refreshToken = jwt.sign(
-      { ...tokenPayload, jti: crypto.randomUUID() },
-      jwtConfig.refreshSecret,
-      { expiresIn: jwtConfig.refreshExpiresIn as jwt.SignOptions["expiresIn"] },
-    );
-
-    const decoded = jwt.decode(refreshToken) as { exp: number };
-    const expiresAt = new Date(decoded.exp * 1000);
-    await this.repository.saveRefreshToken(
-      user.id,
-      refreshToken,
-      expiresAt,
-      metadata?.userAgent,
-      metadata?.ipAddress,
-    );
-
-    if (metadata?.userAgent) {
-      const deviceHash = generateDeviceHash(metadata.userAgent);
-      await this.repository.updateUserDeviceLastLogin(
-        user.id,
-        deviceHash,
-        metadata.ipAddress,
+      const refreshToken = jwt.sign(
+        { ...tokenPayload, jti: crypto.randomUUID() },
+        jwtConfig.refreshSecret,
+        { expiresIn: jwtConfig.refreshExpiresIn as jwt.SignOptions["expiresIn"] },
       );
+
+      const decoded = jwt.decode(refreshToken) as { exp: number };
+      const expiresAt = new Date(decoded.exp * 1000);
+      await this.repository.saveRefreshToken(
+        user.id,
+        refreshToken,
+        expiresAt,
+        metadata?.userAgent,
+        metadata?.ipAddress,
+      );
+
+      if (metadata?.userAgent) {
+        const deviceHash = generateDeviceHash(metadata.userAgent);
+        const parsedDevice = parseUserAgent(metadata.userAgent);
+        const existingDevice =
+          typeof this.repository.findUserDevice === "function"
+            ? await this.repository.findUserDevice(user.id, deviceHash)
+            : null;
+        if (!existingDevice && typeof this.repository.upsertUserDevice === "function") {
+          await this.repository.upsertUserDevice({
+            userId: user.id,
+            deviceHash,
+            deviceName: parsedDevice,
+            ipAddress: metadata.ipAddress,
+          });
+        } else if (typeof this.repository.updateUserDeviceLastLogin === "function") {
+          await this.repository.updateUserDeviceLastLogin(
+            user.id,
+            deviceHash,
+            metadata.ipAddress,
+          );
+        }
+      }
+
+      authResult = {
+        accessToken,
+        refreshToken,
+        user: {
+          id: user.id,
+          email: user.email,
+          fullName: user.fullName,
+          role: user.role.name,
+          roleId: user.roleId,
+          siteId: userSiteId,
+          siteIds: userSiteIds,
+          permissions: userPermissions,
+          mustChangePassword: user.mustChangePassword ?? false,
+        },
+      };
     }
 
     await this.repository.createAuditLog({
@@ -413,24 +529,7 @@ export class Auth2FAService {
       userAgent: metadata?.userAgent,
     });
 
-    const permissions = Array.from(
-      await permissionCacheService.getRolePermissions(user.roleId),
-    );
-
-    return {
-      accessToken,
-      refreshToken,
-      user: {
-        id: user.id,
-        email: user.email,
-        fullName: user.fullName,
-        role: user.role.name,
-        roleId: user.roleId,
-        siteId: userSiteId,
-        siteIds: userSiteIds,
-        permissions,
-      },
-    };
+    return authResult;
   }
 
   async disable2FA(

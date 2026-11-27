@@ -146,14 +146,17 @@ export async function authMiddleware(
     }
 
     // SEC-16: Áp đặt cờ mustChangePassword
-    // Nếu token hoặc tài khoản có mustChangePassword: true, chặn mọi thao tác ngoại trừ PUT /auth/password
+    // Nếu token hoặc tài khoản có mustChangePassword: true, chỉ cho phép đổi mật khẩu, lấy /auth/me hoặc đăng xuất
     const isMustChangePassword = Boolean(
       payload.mustChangePassword || userState.mustChangePassword,
     );
-    const isAllowedPasswordEndpoint =
-      cleanPath.endsWith("/auth/password") && req.method === "PUT";
+    const method = (req.method || "").toUpperCase();
+    const isAllowedDuringPasswordChange =
+      (cleanPath.endsWith("/auth/password") && method === "PUT") ||
+      (cleanPath.endsWith("/auth/me") && method === "GET") ||
+      (cleanPath.endsWith("/auth/logout") && method === "POST");
 
-    if (isMustChangePassword && !isAllowedPasswordEndpoint) {
+    if (isMustChangePassword && !isAllowedDuringPasswordChange) {
       next(
         new AppError(
           "Bạn bắt buộc phải đổi mật khẩu trước khi thực hiện các thao tác khác trên hệ thống",
