@@ -1,5 +1,6 @@
-import { PrismaClient } from "@prisma/client";
+import { Prisma, PrismaClient } from "@prisma/client";
 import bcrypt from "bcryptjs";
+import { DEFAULT_SYSTEM_CONFIGS } from "../src/common/constants/system-config.constant";
 
 const prisma = new PrismaClient();
 
@@ -602,7 +603,31 @@ async function main() {
   });
   console.log("MaintenanceConfig default seeded");
 
-  // 6. Notification templates đã được chuyển sang smart-ppe-notification-service (ppe_notification_db)
+  // 6. Seed/Upgrade Default System Configs & Feature Flags (without overwriting existing values)
+  for (const item of DEFAULT_SYSTEM_CONFIGS) {
+    const existingConfig = await prisma.systemConfig.findUnique({
+      where: { key: item.key },
+    });
+    if (!existingConfig) {
+      await prisma.systemConfig.create({
+        data: {
+          key: item.key,
+          value: item.value as unknown as Prisma.InputJsonValue,
+          description: item.description,
+          category: item.category,
+          isPublic: item.isPublic,
+        },
+      });
+    } else if (item.isPublic && !existingConfig.isPublic) {
+      await prisma.systemConfig.update({
+        where: { key: item.key },
+        data: { isPublic: true },
+      });
+    }
+  }
+  console.log("Default system configurations & feature flags synced");
+
+  // 7. Notification templates đã được chuyển sang smart-ppe-notification-service (ppe_notification_db)
   console.log("Seed completed successfully");
 }
 

@@ -69,7 +69,7 @@ export const DEFAULT_SYSTEM_CONFIGS = [
     value: true,
     description: "Bật hạ tầng Webhook dispatching và retry worker",
     category: SYSTEM_CONFIG_CATEGORY.FEATURE_FLAG,
-    isPublic: false,
+    isPublic: true,
   },
   {
     key: FEATURE_FLAGS.AI_ENABLED,

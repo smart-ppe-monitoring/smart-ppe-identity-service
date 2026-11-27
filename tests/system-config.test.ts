@@ -30,6 +30,7 @@ import { NotificationSubscriber } from "../src/common/subscribers/notification.s
 import { EventBusService } from "../src/common/services/event-bus.service";
 import {
   SystemConfigService,
+  systemConfigService,
   isSensitiveSystemConfig,
 } from "../src/modules/system-config/system-config.service";
 import { SystemConfigController } from "../src/modules/system-config/system-config.controller";
@@ -211,6 +212,57 @@ describe("System Configuration Service & Cache Operations", () => {
 
     const publicConfigs = await service.getPublicConfigs();
     assert.equal(publicConfigs[FEATURE_FLAGS.NOTIFICATIONS_ENABLED], false);
+  });
+
+  it("Issue #13: DEFAULT_SYSTEM_CONFIGS defines feature.webhooks.enabled with isPublic=true and value=true", () => {
+    const webhookFlag = DEFAULT_SYSTEM_CONFIGS.find(
+      (c) => c.key === FEATURE_FLAGS.WEBHOOKS_ENABLED,
+    );
+    assert.ok(webhookFlag);
+    assert.equal(webhookFlag.isPublic, true);
+    assert.equal(webhookFlag.value, true);
+  });
+
+  it("Issue #13: ensureDefaultConfigs upgrades legacy feature.webhooks.enabled (isPublic=false) to isPublic=true without overwriting value", async () => {
+    mockDb.set(FEATURE_FLAGS.WEBHOOKS_ENABLED, {
+      id: "cfg-webhook-legacy",
+      key: FEATURE_FLAGS.WEBHOOKS_ENABLED,
+      value: false,
+      description: "Legacy webhook flag",
+      category: SYSTEM_CONFIG_CATEGORY.FEATURE_FLAG,
+      isPublic: false,
+    });
+
+    await service.ensureDefaultConfigs();
+    const upgraded = mockDb.get(FEATURE_FLAGS.WEBHOOKS_ENABLED);
+    assert.equal(upgraded.isPublic, true);
+    assert.equal(upgraded.value, false);
+
+    const publicConfigs = await service.getPublicConfigs();
+    assert.equal(publicConfigs[FEATURE_FLAGS.WEBHOOKS_ENABLED], false);
+  });
+
+  it("Issue #13: toggleFeatureFlag keeps feature.webhooks.enabled public and reflects false/true in getPublicConfigs", async () => {
+    mockDb.set(FEATURE_FLAGS.WEBHOOKS_ENABLED, {
+      id: "cfg-webhook-toggle",
+      key: FEATURE_FLAGS.WEBHOOKS_ENABLED,
+      value: true,
+      description: "Webhook flag",
+      category: SYSTEM_CONFIG_CATEGORY.FEATURE_FLAG,
+      isPublic: false,
+    });
+
+    await service.toggleFeatureFlag(FEATURE_FLAGS.WEBHOOKS_ENABLED, {
+      enabled: false,
+    });
+    let publicConfigs = await service.getPublicConfigs();
+    assert.equal(publicConfigs[FEATURE_FLAGS.WEBHOOKS_ENABLED], false);
+
+    await service.toggleFeatureFlag(FEATURE_FLAGS.WEBHOOKS_ENABLED, {
+      enabled: true,
+    });
+    publicConfigs = await service.getPublicConfigs();
+    assert.equal(publicConfigs[FEATURE_FLAGS.WEBHOOKS_ENABLED], true);
   });
 
   it("should broadcast value on Redis PubSub only for public configs and omit value for private configs", async () => {
@@ -815,7 +867,7 @@ describe("Issue #8: SystemConfig Audit Redaction, Branding Seed & Full DTO on GE
     const testConfigKey = `it.issue8.secret_${suffix}`;
 
     async function requestApi(
-      method: "GET" | "POST" | "PUT",
+      method: "GET" | "POST" | "PUT" | "PATCH",
       path: string,
       body?: unknown,
     ) {
@@ -833,6 +885,23 @@ describe("Issue #8: SystemConfig Audit Redaction, Branding Seed & Full DTO on GE
         method,
         headers,
         body: body !== undefined ? JSON.stringify(body) : undefined,
+      });
+      const text = await res.text();
+      return {
+        status: res.status,
+        body: text ? JSON.parse(text) : null,
+      };
+    }
+
+    async function requestPublicGet(path: string) {
+      const headers: Record<string, string> = {};
+      if (envConfig.gateway.internalSecret) {
+        headers[GATEWAY_HEADERS.INTERNAL_SECRET] =
+          envConfig.gateway.internalSecret;
+      }
+      const res = await fetch(`${baseUrl}${path}`, {
+        method: "GET",
+        headers,
       });
       const text = await res.text();
       return {
@@ -1004,6 +1073,95 @@ describe("Issue #8: SystemConfig Audit Redaction, Branding Seed & Full DTO on GE
       );
       assert.strictEqual(notFoundRes.status, 404);
       assert.strictEqual(notFoundRes.body.code, ERROR_CODE.NOT_FOUND);
+    });
+
+    it("Issue #13: GET /api/v1/system/public exposes feature.webhooks.enabled boolean without Authorization header and reflects toggle changes", async (t) => {
+      if (!dbAvailable) {
+        t.skip("PostgreSQL ppe_identity_db is unavailable");
+        return;
+      }
+
+      const testStart = new Date();
+      const preExisting = await prisma.systemConfig.findUnique({
+        where: { key: FEATURE_FLAGS.WEBHOOKS_ENABLED },
+      });
+      let targetConfigId: string | null = preExisting?.id ?? null;
+
+      try {
+        await systemConfigService.ensureDefaultConfigs();
+
+        const pubRes1 = await requestPublicGet("/api/v1/system/public");
+        assert.strictEqual(pubRes1.status, 200);
+        assert.strictEqual(pubRes1.body.success, true);
+        assert.strictEqual(
+          typeof pubRes1.body.data?.[FEATURE_FLAGS.WEBHOOKS_ENABLED],
+          "boolean",
+        );
+
+        const toggleFalseRes = await requestApi(
+          "PATCH",
+          `/api/v1/system/features/${encodeURIComponent(FEATURE_FLAGS.WEBHOOKS_ENABLED)}/toggle`,
+          { enabled: false },
+        );
+        assert.strictEqual(toggleFalseRes.status, 200);
+        assert.strictEqual(toggleFalseRes.body.data?.isPublic, true);
+        targetConfigId = toggleFalseRes.body.data?.id ?? targetConfigId;
+
+        const pubRes2 = await requestPublicGet("/api/v1/system/public");
+        assert.strictEqual(pubRes2.status, 200);
+        assert.strictEqual(
+          pubRes2.body.data?.[FEATURE_FLAGS.WEBHOOKS_ENABLED],
+          false,
+        );
+
+        const toggleTrueRes = await requestApi(
+          "PATCH",
+          `/api/v1/system/features/${encodeURIComponent(FEATURE_FLAGS.WEBHOOKS_ENABLED)}/toggle`,
+          { enabled: true },
+        );
+        assert.strictEqual(toggleTrueRes.status, 200);
+
+        const pubRes3 = await requestPublicGet("/api/v1/system/public");
+        assert.strictEqual(pubRes3.status, 200);
+        assert.strictEqual(
+          pubRes3.body.data?.[FEATURE_FLAGS.WEBHOOKS_ENABLED],
+          true,
+        );
+      } finally {
+        if (preExisting) {
+          await prisma.systemConfig
+            .update({
+              where: { key: FEATURE_FLAGS.WEBHOOKS_ENABLED },
+              data: {
+                value: preExisting.value as any,
+                description: preExisting.description,
+                category: preExisting.category,
+                isPublic: true,
+              },
+            })
+            .catch(() => {});
+          systemConfigService.invalidateCache(
+            FEATURE_FLAGS.WEBHOOKS_ENABLED,
+            preExisting.value,
+          );
+        } else {
+          await prisma.systemConfig
+            .deleteMany({ where: { key: FEATURE_FLAGS.WEBHOOKS_ENABLED } })
+            .catch(() => {});
+          systemConfigService.invalidateCache(FEATURE_FLAGS.WEBHOOKS_ENABLED);
+        }
+        if (targetConfigId) {
+          await prisma.auditLog
+            .deleteMany({
+              where: {
+                targetId: targetConfigId,
+                action: "TOGGLE_FEATURE_FLAG",
+                createdAt: { gte: testStart },
+              },
+            })
+            .catch(() => {});
+        }
+      }
     });
   });
 });
